@@ -39,13 +39,7 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
           <tr>
             <td align="center" style="background-color:#14532d;padding:28px 20px 22px 20px;">
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" valign="middle" width="110" height="110" style="width:110px;height:110px;background-color:#ffffff;border-radius:55px;">
-                    <img src="cid:logo-sivpro" alt="S.I.V.PRO" width="92" height="92" style="display:block;width:92px;height:92px;border:0;margin:0 auto;">
-                  </td>
-                </tr>
-              </table>
+              <img src="cid:logo-sivpro" alt="S.I.V.PRO - Artesanía 1994" width="130" height="130" style="display:block;margin:0 auto;width:130px;height:130px;border:0;outline:none;text-decoration:none;border-radius:50%;">
               <div style="color:#ffffff;font-size:24px;font-weight:bold;letter-spacing:3px;margin-top:14px;">S.I.V.PRO</div>
               <div style="color:#bbf7d0;font-size:13px;margin-top:4px;">Pizzería La Sirena</div>
             </td>

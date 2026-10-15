@@ -151,10 +151,11 @@ El código vence en 15 minutos y se invalida tras 5 intentos fallidos.
 #### `POST /api/uploads`
 
 `Content-Type: multipart/form-data`
+`Authorization: Bearer <token>` (obligatorio)
 
 | Campo | Tipo | Descripción |
 | --- | --- | --- |
-| `archivo` | file | Obligatorio. JPEG, PNG, WEBP o PDF, máximo 5 MB |
+| `archivo` | file | Obligatorio. JPEG, PNG o WEBP, máximo 5 MB |
 | `carpeta` | text | Opcional. Valores permitidos: `productos`, `comprobantes`, `proveedores`, `no-conformes`. Cualquier otro valor se guarda en `otros` |
 
 Los archivos se guardan en Cloudinary dentro de la carpeta `sivpro/<carpeta>`.
@@ -171,9 +172,11 @@ Los archivos se guardan en Cloudinary dentro de la carpeta `sivpro/<carpeta>`.
 | Código | Causa |
 | --- | --- |
 | 400 | Falta el campo `archivo` o el multipart está mal formado |
+| 401 | Token faltante, inválido o expirado |
 | 413 | El archivo supera los 5 MB |
 | 415 | Tipo de archivo no permitido |
 | 404 | Ruta inexistente |
+| 429 | Demasiadas subidas desde la IP (máx. 20 cada 15 minutos) |
 | 502 | Cloudinary rechazó la subida |
 | 500 | Error interno no previsto |
 
@@ -181,6 +184,7 @@ Los archivos se guardan en Cloudinary dentro de la carpeta `sivpro/<carpeta>`.
 
 ```bash
 curl -X POST http://localhost:3000/api/uploads \
+  -H "Authorization: Bearer <token>" \
   -F "archivo=@./foto.jpg" \
   -F "carpeta=productos"
 ```
@@ -208,4 +212,5 @@ tests/
 
 - El código de recuperación vence en **15 minutos** y se invalida tras **5 intentos fallidos**.
 - Los archivos se suben con un máximo de **5 MB**.
-- Tipos de archivo permitidos: **JPEG, PNG, WEBP y PDF**.
+- Tipos de archivo permitidos: **JPEG, PNG y WEBP**.
+- `POST /api/uploads` exige **Bearer token** y permite un máximo de **20 subidas por IP cada 15 minutos**.

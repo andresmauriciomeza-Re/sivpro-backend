@@ -6,7 +6,6 @@ export const ALLOWED_MIME_TYPES = [
   'image/jpeg',
   'image/png',
   'image/webp',
-  'application/pdf',
 ];
 
 export const ALLOWED_FOLDERS = [
@@ -21,7 +20,7 @@ export const DEFAULT_FOLDER = 'otros';
 export function fileFilter(req, file, cb) {
   if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
     return cb(
-      new AppError('Tipo de archivo no permitido. Use JPG, PNG, WEBP o PDF.', 415)
+      new AppError('Tipo de archivo no permitido. Use JPG, PNG o WEBP.', 415)
     );
   }
   cb(null, true);
@@ -33,7 +32,7 @@ export function validateFile(file) {
   }
   if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
     throw new AppError(
-      'Tipo de archivo no permitido. Use JPG, PNG, WEBP o PDF.',
+      'Tipo de archivo no permitido. Use JPG, PNG o WEBP.',
       415
     );
   }
