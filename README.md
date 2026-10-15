@@ -2,49 +2,96 @@
 
 Backend de S.I.V.PRO construido con Node.js + Express. Expone endpoints de salud, autenticación, recuperación de contraseña y subida de archivos a Cloudinary.
 
-Todos los errores responden con el formato:
+## Índice
 
-```json
-{ "error": { "message": "...", "statusCode": 400 } }
-```
+1. [Requisitos](#requisitos)
+2. [Instalación y ejecución](#instalación-y-ejecución)
+3. [Variables de entorno](#variables-de-entorno)
+4. [Formato de errores](#formato-de-errores)
+5. [Endpoints](#endpoints)
+   - [Salud](#salud)
+   - [Autenticación](#autenticación)
+   - [Recuperación de contraseña](#recuperación-de-contraseña)
+   - [Subida de archivos](#subida-de-archivos)
+6. [Estructura del proyecto](#estructura-del-proyecto)
+7. [Notas](#notas)
 
 ## Requisitos
 
 - Node.js >= 18
 - PostgreSQL accesible
 - Cuenta de Cloudinary
-- Cuenta SMTP (Gmail) para enviar los códigos de recuperación
+- Cuenta Gmail con contraseña de aplicación (para enviar los códigos de recuperación)
 
-## Instalación
+## Instalación y ejecución
 
 ```bash
 npm install
 cp .env.example .env
+npm run dev   # desarrollo (node --watch)
+npm start     # producción
 ```
 
-Completa las variables en `.env` (solo nombres aquí; no se publican valores):
+Completa las variables en `.env` (solo nombres aquí; no se publican valores).
+
+## Variables de entorno
+
+### Servidor
 
 | Variable | Descripción |
 | --- | --- |
 | `PORT` | Puerto del servidor (por defecto `3000`) |
 | `FRONTEND_URL` | Orígenes permitidos por CORS, separados por coma (ej. `http://localhost:5173`) |
 | `NODE_ENV` | Con `production` se activa `trust proxy` |
+
+### Base de datos
+
+| Variable | Descripción |
+| --- | --- |
 | `DATABASE_URL` | Cadena de conexión de PostgreSQL |
+
+### Autenticación (JWT)
+
+| Variable | Descripción |
+| --- | --- |
 | `JWT_SECRET` | Secreto para firmar tokens (HS256) |
 | `JWT_EXPIRES_IN` | Vigencia del token (por defecto `8h`) |
+
+### Cloudinary
+
+| Variable | Descripción |
+| --- | --- |
 | `CLOUDINARY_CLOUD_NAME` | Nombre del cloud de Cloudinary |
 | `CLOUDINARY_API_KEY` | API key de Cloudinary |
 | `CLOUDINARY_API_SECRET` | API secret de Cloudinary |
+
+### Correo
+
+| Variable | Descripción |
+| --- | --- |
 | `MAIL_USER` | Usuario SMTP |
 | `MAIL_APP_PASSWORD` | Contraseña de aplicación SMTP |
-| `MAIL_FROM_NAME` | Nombre remitente de los correos |
 
-## Ejecución
+## Formato de errores
 
-```bash
-npm run dev   # desarrollo (node --watch)
-npm start     # producción
+Todos los errores responden con el formato:
+
+```json
+{ "error": { "message": "...", "statusCode": 400 } }
 ```
+
+| Código | Causa |
+| --- | --- |
+| 400 | Validación de datos, cuerpo JSON inválido o falta el campo `archivo` |
+| 401 | Token ausente, inválido o expirado; correo o contraseña incorrectos |
+| 404 | Ruta inexistente |
+| 409 | Documento o correo ya registrado |
+| 413 | El archivo supera los 5 MB |
+| 415 | Tipo de archivo no permitido |
+| 429 | Límite de peticiones (login, registro o solicitud de código) |
+| 500 | Error interno no previsto |
+| 502 | Cloudinary rechazó la subida |
+| 503 | Sin conexión a la base de datos |
 
 ## Endpoints
 
@@ -138,20 +185,27 @@ curl -X POST http://localhost:3000/api/uploads \
   -F "carpeta=productos"
 ```
 
-## Estructura
+## Estructura del proyecto
 
-```
+```text
 src/
+├── assets/        # logo usado en el correo de recuperación
 ├── config/        # configuración (Cloudinary, base de datos)
 ├── controllers/   # req/res
 ├── services/      # auth, recuperación, correo, subida, salud
 ├── models/        # (pendiente)
 ├── routes/        # definición de rutas
 ├── middlewares/   # JWT, multer y normalización de carpeta
-├── utils/         # rate limiters
+├── utils/         # rate limiters y emailTemplates.js (plantilla HTML del correo)
 ├── errors/        # AppError
 ├── validators/    # validación de datos, tipo, tamaño y carpeta
 ├── app.js         # express + CORS + manejo de errores
 └── server.js      # arranque
 tests/
 ```
+
+## Notas
+
+- El código de recuperación vence en **15 minutos** y se invalida tras **5 intentos fallidos**.
+- Los archivos se suben con un máximo de **5 MB**.
+- Tipos de archivo permitidos: **JPEG, PNG, WEBP y PDF**.
