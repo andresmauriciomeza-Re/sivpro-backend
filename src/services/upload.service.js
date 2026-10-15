@@ -10,7 +10,7 @@ export function uploadFileToCloudinary(buffer, carpeta) {
       },
       (error, result) => {
         if (error) {
-          console.error('Cloudinary upload error:', error.message);
+          console.error('Cloudinary upload error:', error.http_code, error.message);
           return reject(
             new AppError('No se pudo subir el archivo a Cloudinary.', 502)
           );

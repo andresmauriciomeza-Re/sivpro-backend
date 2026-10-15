@@ -4,15 +4,38 @@ import AppError from './errors/AppError.js';
 import healthRouter from './routes/health.routes.js';
 import authRouter from './routes/auth.routes.js';
 import uploadsRouter from './routes/uploads.routes.js';
+import recuperacionRouter from './routes/recuperacion.routes.js';
 
 const app = express();
 
-app.use(cors({ origin: process.env.FRONTEND_URL }));
+function obtenerOrigenesPermitidos(valor) {
+  return (valor || '')
+    .split(',')
+    .map((origen) => origen.trim().replace(/\/$/, ''))
+    .filter((origen) => origen.length > 0);
+}
+
+const ORIGENES_PERMITIDOS = obtenerOrigenesPermitidos(process.env.FRONTEND_URL);
+
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
+app.use(
+  cors({
+    origin: (origen, callback) => {
+      const normalizado =
+        typeof origen === 'string' ? origen.trim().replace(/\/$/, '') : '';
+      callback(null, !origen || ORIGENES_PERMITIDOS.includes(normalizado));
+    },
+  })
+);
 app.use(express.json());
 
 app.use('/api', healthRouter);
 app.use('/api', authRouter);
 app.use('/api', uploadsRouter);
+app.use('/api', recuperacionRouter);
 
 app.use((req, res) => {
   res.status(404).json({
@@ -44,6 +67,15 @@ app.use((err, req, res, next) => {
       error: {
         message,
         statusCode,
+      },
+    });
+  }
+
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      error: {
+        message: 'El cuerpo de la petición no es un JSON válido.',
+        statusCode: 400,
       },
     });
   }

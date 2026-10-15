@@ -1,5 +1,10 @@
-import { login, obtenerUsuarioPorId } from '../services/auth.service.js';
+import {
+  login,
+  obtenerUsuarioPorId,
+  registrarCliente,
+} from '../services/auth.service.js';
 import { registrarFallo, reiniciarIntentos } from '../utils/loginLimiter.js';
+import { registrarIntento } from '../utils/registerLimiter.js';
 
 export async function iniciarSesion(req, res, next) {
   try {
@@ -19,6 +24,19 @@ export async function obtenerPerfil(req, res, next) {
     const usuario = await obtenerUsuarioPorId(req.usuario.id);
     res.status(200).json(usuario);
   } catch (error) {
+    next(error);
+  }
+}
+
+export async function registrar(req, res, next) {
+  try {
+    const resultado = await registrarCliente(req.body);
+    registrarIntento(req.claveRegistro);
+    res.status(201).json(resultado);
+  } catch (error) {
+    if (error.statusCode === 409) {
+      registrarIntento(req.claveRegistro);
+    }
     next(error);
   }
 }

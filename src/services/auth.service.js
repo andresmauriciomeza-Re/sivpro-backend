@@ -1,10 +1,14 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import AppError from '../errors/AppError.js';
-import { query } from '../config/db.js';
+import { query, transaction } from '../config/db.js';
 
 const CREDENCIALES_INVALIDAS = 'Correo o contraseña incorrectos.';
 const SIN_BASE_DE_DATOS = 'No se pudo conectar con la base de datos.';
+const DOCUMENTO_DUPLICADO = 'Este documento ya está registrado.';
+const CORREO_DUPLICADO = 'Este correo ya está registrado.';
+const REGISTRO_DUPLICADO = 'Este registro ya existe.';
+const ERROR_INTERNO = 'Error interno del servidor.';
 
 const CONSULTA_LOGIN = `
   SELECT u.id_usuario, u.nombre, u.correo, u.contrasena, u.estado, u.id_rol,
@@ -133,4 +137,101 @@ export async function obtenerUsuarioPorId(idUsuario) {
 
   const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
   return armarUsuario(usuario, permisos);
+}
+
+const CONSULTA_DOCUMENTO_EXISTE = `
+  SELECT 1 FROM tb_usuarios WHERE id_usuario = $1
+`;
+
+const CONSULTA_CORREO_EXISTE = `
+  SELECT 1 FROM tb_usuarios WHERE LOWER(correo) = LOWER($1)
+`;
+
+const CONSULTA_ROL_CLIENTE = `
+  SELECT id_rol FROM tb_roles WHERE nombre = 'Cliente'
+`;
+
+const INSERT_USUARIO = `
+  INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, telefono, id_rol)
+  VALUES ($1, $2, $3, $4, $5, $6, $7)
+`;
+
+const INSERT_CLIENTE = `
+  INSERT INTO tb_cliente (id_usuario) VALUES ($1)
+`;
+
+function mapearErrorDeBase(error) {
+  if (error instanceof AppError) {
+    return error;
+  }
+
+  if (error.code === '23505') {
+    console.error('Error de base de datos:', error.code, error.constraint);
+
+    if (error.constraint === 'tb_usuarios_correo_key') {
+      return new AppError(CORREO_DUPLICADO, 409);
+    }
+
+    if (
+      error.constraint === 'tb_usuarios_pkey' ||
+      error.constraint === 'tb_cliente_id_usuario_key'
+    ) {
+      return new AppError(DOCUMENTO_DUPLICADO, 409);
+    }
+
+    return new AppError(REGISTRO_DUPLICADO, 409);
+  }
+
+  console.error('Error de base de datos:', error.code);
+  return new AppError(SIN_BASE_DE_DATOS, 503);
+}
+
+export async function registrarCliente(datos) {
+  const { tipoDocumento, numeroDocumento, nombre, correo, telefono, contrasena } =
+    datos;
+
+  const documento = await consultar(CONSULTA_DOCUMENTO_EXISTE, [numeroDocumento]);
+  if (documento.rows.length > 0) {
+    throw new AppError(DOCUMENTO_DUPLICADO, 409);
+  }
+
+  const duplicado = await consultar(CONSULTA_CORREO_EXISTE, [correo]);
+  if (duplicado.rows.length > 0) {
+    throw new AppError(CORREO_DUPLICADO, 409);
+  }
+
+  const rol = await consultar(CONSULTA_ROL_CLIENTE, []);
+  const rolCliente = rol.rows[0];
+  if (!rolCliente) {
+    console.log('Falta el rol Cliente en tb_roles');
+    throw new AppError(ERROR_INTERNO, 500);
+  }
+
+  const hash = await bcrypt.hash(contrasena, 10);
+
+  try {
+    await transaction(async (client) => {
+      await client.query(INSERT_USUARIO, [
+        numeroDocumento,
+        tipoDocumento,
+        nombre,
+        correo,
+        hash,
+        telefono,
+        rolCliente.id_rol,
+      ]);
+      await client.query(INSERT_CLIENTE, [numeroDocumento]);
+    });
+  } catch (error) {
+    throw mapearErrorDeBase(error);
+  }
+
+  return {
+    usuario: {
+      id: numeroDocumento,
+      nombre,
+      correo,
+      rol: 'Cliente',
+    },
+  };
 }

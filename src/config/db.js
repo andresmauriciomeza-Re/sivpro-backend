@@ -16,3 +16,21 @@ pool.on('error', (err) => {
 export function query(text, params) {
   return pool.query(text, params);
 }
+
+export async function transaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const resultado = await callback(client);
+    await client.query('COMMIT');
+    return resultado;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
