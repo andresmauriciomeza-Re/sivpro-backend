@@ -106,3 +106,259 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
     attachments,
   };
 }
+
+// ─────────────────────────── BIENVENIDA (registro de cliente) ───────────────────────────
+
+/** Etiquetas de tipo de documento (mismas del frontend: CC/CE/PP). */
+const ETIQUETAS_DOCUMENTO = {
+  CC: 'Cédula de Ciudadanía',
+  CE: 'Cédula de Extranjería',
+  Pasaporte: 'Pasaporte',
+};
+
+/** "1234567890" → "****7890" (nunca se muestra el documento completo). */
+function enmascararDocumento(numero) {
+  const texto = String(numero ?? '');
+  return texto.length <= 4 ? '****' : `****${texto.slice(-4)}`;
+}
+
+/** "17 de octubre de 2026, 11:09 p. m." en zona horaria America/Bogota. */
+function formatearFechaBogota(fecha = new Date()) {
+  const opciones = { timeZone: 'America/Bogota' };
+  const dia = new Intl.DateTimeFormat('es-CO', { ...opciones, day: 'numeric' }).format(fecha);
+  const mes = new Intl.DateTimeFormat('es-CO', { ...opciones, month: 'long' }).format(fecha);
+  const anio = new Intl.DateTimeFormat('es-CO', { ...opciones, year: 'numeric' }).format(fecha);
+  const hora = new Intl.DateTimeFormat('es-CO', {
+    ...opciones,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+    .format(fecha)
+    // Intl puede usar espacio fino (U+202F/U+00A0) antes de a. m./p. m.
+    .replace(/[\u202F\u00A0]/g, ' ')
+    .replace(/\bAM\b/i, 'a. m.')
+    .replace(/\bPM\b/i, 'p. m.');
+  return `${dia} de ${mes} de ${anio}, ${hora}`;
+}
+
+/** Datos del local, configurables por entorno y con los valores de la Landing. */
+function datosDelLocal() {
+  return {
+    direccion:
+      process.env.LOCAL_DIRECCION || 'Cra. 45 #104-30, Laureles, Medellín, Antioquia',
+    horario:
+      process.env.LOCAL_HORARIO || 'Jueves a domingo, 4:00 p. m. a 10:00 p. m.',
+    telefono: process.env.LOCAL_TELEFONO || '604 234 5678',
+  };
+}
+
+const PASOS_PEDIDO = [
+  'Elige tus pizzas, lasañas o bebidas en nuestra página.',
+  'Realiza el pago anticipado por Nequi o Bancolombia y sube el comprobante.',
+  'Verificamos tu pago y preparamos tu pedido.',
+  'Recógelo en nuestro local. (No realizamos domicilios.)',
+];
+
+/** Correo de bienvenida al registrarse. Recibe SOLO datos públicos del perfil
+ *  (nunca la contraseña) y escapa todo lo que se inserta en el HTML. */
+export function buildWelcomeEmail(datos) {
+  const nombre = String(datos?.nombre || '').trim() || 'cliente';
+  const correo = String(datos?.correo || '').trim();
+  const telefono = String(datos?.telefono || '').trim();
+  const tipoDocumento = String(datos?.tipoDocumento || '').trim();
+  const numeroDocumento = String(datos?.numeroDocumento || '').trim();
+
+  const primerNombre = nombre.split(/\s+/)[0] || 'cliente';
+  const etiquetaTipo =
+    ETIQUETAS_DOCUMENTO[tipoDocumento] || tipoDocumento || '—';
+  const documentoMostrado = numeroDocumento
+    ? `${etiquetaTipo} ${enmascararDocumento(numeroDocumento)}`
+    : '—';
+  const fechaRegistro = datos?.fechaRegistro || formatearFechaBogota();
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  const local = datosDelLocal();
+
+  // Todo dato de usuario pasa por escaparHtml antes de entrar al HTML.
+  const nombreSeguro = escaparHtml(nombre);
+  const primerNombreSeguro = escaparHtml(primerNombre);
+  const correoSeguro = escaparHtml(correo);
+  const telefonoSeguro = escaparHtml(telefono || '—');
+  const documentoSeguro = escaparHtml(documentoMostrado);
+  const fechaSegura = escaparHtml(fechaRegistro);
+  const urlSegura = escaparHtml(frontendUrl);
+  const direccionSegura = escaparHtml(local.direccion);
+  const horarioSegura = escaparHtml(local.horario);
+  const telefonoLocalSeguro = escaparHtml(local.telefono);
+
+  const filaResumen = (etiqueta, valor, ultima = false) => {
+    const borde = ultima ? '' : 'border-bottom:1px solid #eeeeee;';
+    return `
+            <tr>
+              <td style="padding:10px 14px;font-size:14px;color:#777777;${borde}white-space:nowrap;">
+                <strong>${etiqueta}</strong>
+              </td>
+              <td style="padding:10px 14px;font-size:14px;color:#222222;${borde}">
+                ${valor}
+              </td>
+            </tr>`;
+  };
+
+  const filasPasos = PASOS_PEDIDO.map(
+    (paso, i) => `
+            <tr>
+              <td width="34" valign="top" style="padding:6px 10px 6px 0;">
+                <div style="width:26px;height:26px;line-height:26px;border-radius:50%;background-color:#C62828;color:#ffffff;font-size:14px;font-weight:bold;text-align:center;">${i + 1}</div>
+              </td>
+              <td valign="top" style="padding:8px 0;font-size:14px;line-height:1.5;color:#444444;">
+                ${escaparHtml(paso)}
+              </td>
+            </tr>`
+  ).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <title>Bienvenido a Pizzería La Sirena</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
+    Tu cuenta en Pizzería La Sirena fue creada. Ya puedes hacer tu primer pedido.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+          <tr>
+            <td align="center" style="background-color:#C62828;padding:28px 20px 22px 20px;">
+              <img src="cid:logo-sivpro" alt="S.I.V.PRO - Pizzería La Sirena" width="110" height="110" style="display:block;margin:0 auto;width:110px;height:110px;border:0;outline:none;text-decoration:none;border-radius:50%;">
+              <div style="color:#ffffff;font-size:24px;font-weight:bold;letter-spacing:3px;margin-top:14px;">S.I.V.PRO</div>
+              <div style="color:#ffd6d6;font-size:13px;margin-top:4px;">Pizzería La Sirena</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="50%" style="background-color:#E31E24;height:5px;font-size:0;line-height:0;">&nbsp;</td>
+                  <td width="50%" style="background-color:#2E9E3E;height:5px;font-size:0;line-height:0;">&nbsp;</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 28px 6px 28px;color:#222222;">
+              <h1 style="margin:0 0 10px 0;font-size:22px;">¡Hola, ${primerNombreSeguro}!</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">
+                Tu cuenta en <strong>Pizzería La Sirena</strong> se creó exitosamente. Ya puedes ordenar tus pizzas, lasañas y bebidas favoritas.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 28px 4px 28px;">
+              <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Resumen de la cuenta</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
+                ${filaResumen('Nombre completo', nombreSeguro)}
+                ${filaResumen('Correo', correoSeguro)}
+                ${filaResumen('Documento', documentoSeguro)}
+                ${filaResumen('Teléfono', telefonoSeguro)}
+                ${filaResumen('Fecha de registro', fechaSegura, true)}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:22px 28px 4px 28px;">
+              <p style="margin:0 0 6px 0;font-size:16px;font-weight:bold;color:#222222;">¿Cómo hacer tu pedido?</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                ${filasPasos}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 28px 8px 28px;">
+              <a href="${urlSegura}" style="display:inline-block;background-color:#C62828;color:#ffffff;font-size:16px;font-weight:bold;text-decoration:none;padding:16px 34px;border-radius:10px;">Hacer mi primer pedido</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 28px 6px 28px;">
+              <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Datos de nuestro local</p>
+              <p style="margin:0 0 6px 0;font-size:14px;line-height:1.6;color:#555555;">
+                <strong>Dirección:</strong> ${direccionSegura}<br>
+                <strong>Horario:</strong> ${horarioSegura}<br>
+                <strong>Teléfono:</strong> ${telefonoLocalSeguro}
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;background-color:#fff8e6;border:1px solid #f5e3b3;border-radius:8px;padding:12px 14px;">
+                <strong>Nota de seguridad:</strong> si no creaste esta cuenta, ignora este correo o escríbenos. Nunca te pediremos tu contraseña.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="background-color:#fafafa;padding:18px 16px;">
+              <p style="margin:0;font-size:12px;line-height:1.7;color:#999999;">
+                © 2026 Pizzería La Sirena · S.I.V.PRO<br>
+                Tus datos se tratan según la Ley 1581 de 2012 (Habeas Data).<br>
+                Este es un correo automático; por favor no respondas a este mensaje.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const text = [
+    '¡Bienvenido a Pizzería La Sirena!',
+    '',
+    `¡Hola, ${primerNombre}!`,
+    'Tu cuenta en Pizzería La Sirena se creó exitosamente.',
+    '',
+    'Resumen de la cuenta',
+    `- Nombre completo: ${nombre}`,
+    `- Correo: ${correo}`,
+    `- Documento: ${documentoMostrado}`,
+    `- Teléfono: ${telefono || '—'}`,
+    `- Fecha de registro: ${fechaRegistro}`,
+    '',
+    '¿Cómo hacer tu pedido?',
+    ...PASOS_PEDIDO.map((paso, i) => `${i + 1}. ${paso}`),
+    '',
+    `Hacer mi primer pedido: ${frontendUrl}`,
+    '',
+    'Datos de nuestro local',
+    `- Dirección: ${local.direccion}`,
+    `- Horario: ${local.horario}`,
+    `- Teléfono: ${local.telefono}`,
+    '',
+    'Nota de seguridad: si no creaste esta cuenta, ignora este correo o escríbenos. Nunca te pediremos tu contraseña.',
+    '',
+    '© 2026 Pizzería La Sirena · S.I.V.PRO',
+    'Tus datos se tratan según la Ley 1581 de 2012 (Habeas Data).',
+    'Este es un correo automático; por favor no respondas a este mensaje.',
+  ].join('\n');
+
+  const attachments = [
+    {
+      filename: 'logo.png',
+      path: RUTA_LOGO,
+      cid: 'logo-sivpro',
+    },
+  ];
+
+  return {
+    subject: '¡Bienvenido a Pizzería La Sirena! Tu cuenta fue creada 🍕',
+    html,
+    text,
+    attachments,
+  };
+}
