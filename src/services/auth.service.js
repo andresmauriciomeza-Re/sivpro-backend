@@ -11,7 +11,8 @@ const REGISTRO_DUPLICADO = 'Este registro ya existe.';
 const ERROR_INTERNO = 'Error interno del servidor.';
 
 const CONSULTA_LOGIN = `
-  SELECT u.id_usuario, u.nombre, u.correo, u.contrasena, u.estado, u.id_rol,
+  SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo, u.telefono,
+         u.contrasena, u.estado, u.id_rol,
          r.nombre AS rol, r.estado AS rol_estado
   FROM tb_usuarios u
   JOIN tb_roles r ON r.id_rol = u.id_rol
@@ -19,7 +20,8 @@ const CONSULTA_LOGIN = `
 `;
 
 const CONSULTA_POR_ID = `
-  SELECT u.id_usuario, u.nombre, u.correo, u.estado, u.id_rol,
+  SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo, u.telefono,
+         u.estado, u.id_rol,
          r.nombre AS rol, r.estado AS rol_estado
   FROM tb_usuarios u
   JOIN tb_roles r ON r.id_rol = u.id_rol
@@ -86,6 +88,10 @@ function armarUsuario(datos, permisos) {
     id: datos.id_usuario,
     nombre: datos.nombre,
     correo: datos.correo,
+    // El número de documento ES el id de usuario (así lo crea el registro).
+    numeroDocumento: String(datos.id_usuario),
+    tipoDocumento: datos.tipo_documento ?? '',
+    telefono: datos.telefono ?? '',
     rol: datos.rol,
     permisos,
   };
@@ -181,6 +187,35 @@ export async function cambiarContrasenaUsuario(
   await consultar(UPDATE_CONTRASENA, [hash, idUsuario]);
 
   return { nombre: usuario.nombre, correo: usuario.correo };
+}
+
+const CONSULTA_CORREO_DE_OTRO = `
+  SELECT 1 FROM tb_usuarios WHERE LOWER(correo) = LOWER($1) AND id_usuario <> $2
+`;
+
+const UPDATE_PERFIL = `
+  UPDATE tb_usuarios SET correo = $1, telefono = $2 WHERE id_usuario = $3
+`;
+
+/**
+ * Actualiza SOLO correo y teléfono del usuario autenticado (los demás campos
+ * del body se ignoran en el validador). tb_cliente y tb_empleado no copian
+ * estos campos (verificado en information_schema), así que basta un solo
+ * UPDATE sobre tb_usuarios. Devuelve el perfil completo igual que /auth/me.
+ */
+export async function actualizarPerfilUsuario(idUsuario, correo, telefono) {
+  const propio = await consultar(CONSULTA_CORREO_DE_OTRO, [correo, idUsuario]);
+  if (propio.rows.length > 0) {
+    throw new AppError(CORREO_DUPLICADO, 409);
+  }
+
+  try {
+    await consultar(UPDATE_PERFIL, [correo, telefono, idUsuario]);
+  } catch (error) {
+    throw mapearErrorDeBase(error);
+  }
+
+  return obtenerUsuarioPorId(idUsuario);
 }
 
 const CONSULTA_DOCUMENTO_EXISTE = `

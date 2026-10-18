@@ -145,6 +145,29 @@ export function validarCambioContrasena(req, res, next) {
   next();
 }
 
+/**
+ * PUT /auth/perfil: acepta SOLO correo y teléfono; cualquier otro campo del
+ * body (nombre, documento, rol, estado, id…) se descarta al reescribir
+ * req.body. El teléfono usa el mismo criterio del frontend (7-15 dígitos,
+ * más laxo que el registro para no bloquear teléfonos ya guardados).
+ */
+export function validarActualizacionPerfil(req, res, next) {
+  const body = req.body || {};
+
+  const correo = validarFormatoCorreo(body.correo);
+
+  if (typeof body.telefono !== 'string') {
+    throw new AppError('El teléfono es obligatorio.', 400);
+  }
+  const telefono = body.telefono.replace(/\s+/g, '');
+  if (!/^\d{7,15}$/.test(telefono)) {
+    throw new AppError('El teléfono debe tener entre 7 y 15 dígitos.', 400);
+  }
+
+  req.body = { correo, telefono };
+  next();
+}
+
 export function validarRegistro(req, res, next) {
   const body = req.body || {};
 

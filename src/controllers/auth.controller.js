@@ -1,4 +1,5 @@
 import {
+  actualizarPerfilUsuario,
   cambiarContrasenaUsuario,
   login,
   obtenerUsuarioPorId,
@@ -13,6 +14,7 @@ import {
   reiniciarIntentos,
   registrarFalloCambioContrasena,
   reiniciarCambioContrasena,
+  registrarIntentoPerfil,
 } from '../utils/loginLimiter.js';
 import { registrarIntento } from '../utils/registerLimiter.js';
 
@@ -70,6 +72,22 @@ export async function cambiarContrasena(req, res, next) {
     if (error.message === 'La contraseña actual es incorrecta.') {
       registrarFalloCambioContrasena(req.claveIntentoCambio);
     }
+    next(error);
+  }
+}
+
+export async function actualizarPerfil(req, res, next) {
+  // Cuenta el intento ANTES de validar el resultado: el rate limit del
+  // perfil frena el abuso, no solo los fallos.
+  registrarIntentoPerfil(req.claveIntentoPerfil);
+  try {
+    const usuario = await actualizarPerfilUsuario(
+      req.usuario.id,
+      req.body.correo,
+      req.body.telefono
+    );
+    res.status(200).json(usuario);
+  } catch (error) {
     next(error);
   }
 }

@@ -1,14 +1,15 @@
 import { Router } from 'express';
-import { loginRateLimit } from '../utils/loginLimiter.js';
-import { cambiarContrasenaRateLimit } from '../utils/loginLimiter.js';
+import { cambiarContrasenaRateLimit, loginRateLimit, perfilRateLimit } from '../utils/loginLimiter.js';
 import { registerRateLimit } from '../utils/registerLimiter.js';
 import {
+  validarActualizacionPerfil,
   validarCambioContrasena,
   validarLogin,
   validarRegistro,
 } from '../validators/auth.validator.js';
 import { verificarToken } from '../middlewares/auth.js';
 import {
+  actualizarPerfil,
   cambiarContrasena,
   iniciarSesion,
   obtenerPerfil,
@@ -26,6 +27,13 @@ router.put(
   cambiarContrasenaRateLimit,
   validarCambioContrasena,
   cambiarContrasena
+);
+router.put(
+  '/auth/perfil',
+  verificarToken,
+  perfilRateLimit,
+  validarActualizacionPerfil,
+  actualizarPerfil
 );
 
 export default router;
