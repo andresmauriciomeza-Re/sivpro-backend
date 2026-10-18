@@ -45,7 +45,8 @@ export async function enviarCodigoRecuperacion(correo, nombre, codigo) {
 
   try {
     await obtenerTransporte().sendMail({
-      from: `"S.I.V.PRO La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,
@@ -72,7 +73,8 @@ export async function enviarCorreoBienvenida(datos) {
   try {
     const mail = buildWelcomeEmail(datos);
     await obtenerTransporte().sendMail({
-      from: process.env.MAIL_FROM || `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,
@@ -102,7 +104,8 @@ export async function enviarAvisoCambioContrasena(datos) {
   try {
     const mail = buildPasswordChangedEmail(datos);
     await obtenerTransporte().sendMail({
-      from: process.env.MAIL_FROM || `"S.I.V.PRO La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,

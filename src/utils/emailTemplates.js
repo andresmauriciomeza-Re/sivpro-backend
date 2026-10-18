@@ -17,8 +17,28 @@ function escaparHtml(texto) {
     .replace(/'/g, '&#39;');
 }
 
+/** Enlace a Google Maps para una dirección, listo para usar en href. */
+function urlDeGoogleMaps(direccion) {
+  return escaparHtml(
+    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccion)}`
+  );
+}
+
+/** "604 234 5678" → "6042345678" (valor de href="tel:..."). */
+function numeroDeTelefono(telefono) {
+  return String(telefono || '').replace(/[^\d+]/g, '');
+}
+
+// Color heredado + !important donde Gmail/Apple suelen autodetectar enlaces
+// (correo, teléfonos, dirección, fecha) para que nunca se vean en azul.
+const envolver = (valor, color) =>
+  `<span style="color:${color} !important;">${valor}</span>`;
+
 export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
   const nombreSeguro = escaparHtml(nombre);
+  const local = datosDelLocal();
+  const direccionSegura = escaparHtml(local.direccion);
+  const urlMaps = urlDeGoogleMaps(local.direccion);
 
   const html = `
 <!DOCTYPE html>
@@ -27,7 +47,7 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light only">
-  <title>Recupera tu contraseña</title>
+  <title>Tu código de recuperación de S.I.V.PRO</title>
 </head>
 <body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
@@ -78,7 +98,8 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
           </tr>
           <tr>
             <td align="center" style="background-color:#fafafa;padding:16px;font-size:12px;color:#999999;">
-              © S.I.V.PRO · Pizzería La Sirena
+              © S.I.V.PRO · Pizzería La Sirena<br>
+              <a href="${urlMaps}" style="color:#999999 !important;text-decoration:none !important;">${direccionSegura}</a>
             </td>
           </tr>
         </table>
@@ -89,7 +110,12 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
 </html>
   `.trim();
 
-  const text = `Hola ${nombre}, tu código para recuperar la contraseña es ${codigo}. Vence en ${minutos} minutos. Si no lo solicitaste, ignora este mensaje.`;
+  const text = [
+    `Hola ${nombre}, tu código para recuperar la contraseña es ${codigo}. Vence en ${minutos} minutos. Si no lo solicitaste, ignora este mensaje.`,
+    '',
+    '© S.I.V.PRO · Pizzería La Sirena',
+    local.direccion,
+  ].join('\n');
 
   const attachments = [
     {
@@ -197,11 +223,11 @@ export function buildWelcomeEmail(datos) {
   const direccionSegura = escaparHtml(local.direccion);
   const horarioSegura = escaparHtml(local.horario);
   const telefonoLocalSeguro = escaparHtml(local.telefono);
-
-  // Color heredado + !important donde Gmail/Apple suelen autodetectar enlaces
-  // (correo, teléfonos, dirección, fecha) para que nunca se vean en azul.
-  const envolver = (valor, color) =>
-    `<span style="color:${color} !important;">${valor}</span>`;
+  const urlMaps = urlDeGoogleMaps(local.direccion);
+  const telLocal = numeroDeTelefono(local.telefono);
+  const telUsuario = telefono
+    ? `<a href="tel:${numeroDeTelefono(telefono)}" style="color:#222222 !important;text-decoration:none !important;">${telefonoSeguro}</a>`
+    : telefonoSeguro;
 
   const filaResumen = (etiqueta, valor, ultima = false) => {
     const borde = ultima ? '' : 'border-bottom:1px solid #eeeeee;';
@@ -235,7 +261,7 @@ export function buildWelcomeEmail(datos) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light only">
-  <title>Bienvenido a Pizzería La Sirena</title>
+  <title>Bienvenido a Pizzería La Sirena, tu cuenta fue creada</title>
   <style>
     /* Apple Mail / iOS: los detectores de datos no deben pintar de azul
        direcciones, teléfonos ni fechas del correo. */
@@ -264,8 +290,7 @@ export function buildWelcomeEmail(datos) {
             <td style="padding:0;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td width="50%" style="background-color:#E31E24;height:5px;font-size:0;line-height:0;">&nbsp;</td>
-                  <td width="50%" style="background-color:#2E9E3E;height:5px;font-size:0;line-height:0;">&nbsp;</td>
+                  <td style="background-color:#2E9E3E;height:5px;font-size:0;line-height:0;">&nbsp;</td>
                 </tr>
               </table>
             </td>
@@ -288,7 +313,7 @@ export function buildWelcomeEmail(datos) {
                   `<a href="mailto:${correoSeguro}" style="color:#222222 !important;text-decoration:none !important;">${correoSeguro}</a>`
                 )}
                 ${filaResumen('Documento', documentoSeguro)}
-                ${filaResumen('Teléfono', envolver(telefonoSeguro, '#222222'))}
+                ${filaResumen('Teléfono', telUsuario)}
                 ${filaResumen('Fecha de registro', envolver(fechaSegura, '#222222'), true)}
               </table>
             </td>
@@ -303,16 +328,16 @@ export function buildWelcomeEmail(datos) {
           </tr>
           <tr>
             <td align="center" style="padding:24px 28px 8px 28px;">
-              <a href="${urlSegura}" style="display:inline-block;background-color:#B94A48;color:#ffffff;font-size:16px;font-weight:bold;text-decoration:none;padding:16px 34px;border-radius:10px;">Hacer mi primer pedido</a>
+              <a href="${urlSegura}" style="display:inline-block;background-color:#B94A48;color:#ffffff !important;font-size:16px;font-weight:bold;text-decoration:none !important;padding:16px 34px;border-radius:10px;">Hacer mi primer pedido</a>
             </td>
           </tr>
           <tr>
             <td style="padding:20px 28px 6px 28px;">
               <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Datos de nuestro local</p>
               <p style="margin:0 0 6px 0;font-size:14px;line-height:1.6;color:#555555;">
-                <strong>Dirección:</strong> ${envolver(direccionSegura, '#555555')}<br>
+                <strong>Dirección:</strong> <a href="${urlMaps}" style="color:#222222 !important;text-decoration:none !important;">${direccionSegura}</a><br>
                 <strong>Horario:</strong> ${envolver(horarioSegura, '#555555')}<br>
-                <strong>Teléfono:</strong> ${envolver(telefonoLocalSeguro, '#555555')}
+                <strong>Teléfono:</strong> <a href="tel:${telLocal}" style="color:#555555 !important;text-decoration:none !important;">${telefonoLocalSeguro}</a>
               </p>
             </td>
           </tr>
@@ -326,9 +351,10 @@ export function buildWelcomeEmail(datos) {
           <tr>
             <td align="center" style="background-color:#fafafa;padding:18px 16px;">
               <p style="margin:0;font-size:12px;line-height:1.7;color:#999999;">
-                © 2026 Pizzería La Sirena · S.I.V.PRO<br>
+                © 2026 Pizzería La Sirena · <a href="${urlSegura}" style="color:#222222 !important;text-decoration:none !important;">S.I.V.PRO</a><br>
+                <a href="${urlMaps}" style="color:#999999 !important;text-decoration:none !important;">${direccionSegura}</a><br>
                 Tus datos se tratan según la Ley 1581 de 2012 (Habeas Data).<br>
-                Este es un correo automático; por favor no respondas a este mensaje.
+                Si tienes dudas, responde a este correo o llámanos al <a href="tel:${telLocal}" style="color:#999999 !important;text-decoration:none !important;">${telefonoLocalSeguro}</a>.
               </p>
             </td>
           </tr>
@@ -366,8 +392,9 @@ export function buildWelcomeEmail(datos) {
     'Nota de seguridad: si no creaste esta cuenta, ignora este correo o escríbenos. Nunca te pediremos tu contraseña.',
     '',
     '© 2026 Pizzería La Sirena · S.I.V.PRO',
+    local.direccion,
     'Tus datos se tratan según la Ley 1581 de 2012 (Habeas Data).',
-    'Este es un correo automático; por favor no respondas a este mensaje.',
+    `Si tienes dudas, responde a este correo o llámanos al ${local.telefono}.`,
   ].join('\n');
 
   const attachments = [
@@ -379,7 +406,7 @@ export function buildWelcomeEmail(datos) {
   ];
 
   return {
-    subject: '¡Bienvenido a Pizzería La Sirena! Tu cuenta fue creada 🍕',
+    subject: 'Bienvenido a Pizzería La Sirena, tu cuenta fue creada',
     html,
     text,
     attachments,
@@ -396,7 +423,11 @@ export function buildWelcomeEmail(datos) {
 export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
   const nombreSeguro = escaparHtml(nombre || 'usuario');
   const fechaTexto = escaparHtml(fecha || formatearFechaBogota());
-  const telefono = escaparHtml(datosDelLocal().telefono);
+  const local = datosDelLocal();
+  const telefono = escaparHtml(local.telefono);
+  const direccionSegura = escaparHtml(local.direccion);
+  const urlMaps = urlDeGoogleMaps(local.direccion);
+  const telLocal = numeroDeTelefono(local.telefono);
 
   const html = `
 <!DOCTYPE html>
@@ -405,7 +436,7 @@ export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light only">
-  <title>Tu contraseña fue cambiada</title>
+  <title>Tu contraseña de S.I.V.PRO fue cambiada</title>
 </head>
 <body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
@@ -429,13 +460,14 @@ export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
           <tr>
             <td style="padding:0 28px 28px 28px;">
               <p style="margin:0;font-size:14px;color:#555555;line-height:1.5;">
-                <strong>Si no fuiste tú, contáctanos de inmediato</strong> al ${telefono}.
+                <strong>Si no fuiste tú, contáctanos de inmediato</strong> al <a href="tel:${telLocal}" style="color:#555555 !important;text-decoration:none !important;">${telefono}</a>.
               </p>
             </td>
           </tr>
           <tr>
             <td align="center" style="background-color:#fafafa;padding:16px;font-size:12px;color:#999999;">
-              © S.I.V.PRO · Pizzería La Sirena
+              © S.I.V.PRO · Pizzería La Sirena<br>
+              <a href="${urlMaps}" style="color:#999999 !important;text-decoration:none !important;">${direccionSegura}</a>
             </td>
           </tr>
         </table>
@@ -445,7 +477,12 @@ export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
 </body>
   `.trim();
 
-  const text = `Hola ${nombre}, tu contraseña de S.I.V.PRO fue cambiada el ${fechaTexto}. Si no fuiste tú, contáctanos de inmediato al ${telefono}.`;
+  const text = [
+    `Hola ${nombre}, tu contraseña de S.I.V.PRO fue cambiada el ${fechaTexto}. Si no fuiste tú, contáctanos de inmediato al ${telefono}.`,
+    '',
+    '© S.I.V.PRO · Pizzería La Sirena',
+    local.direccion,
+  ].join('\n');
 
   return {
     subject: 'Tu contraseña de S.I.V.PRO fue cambiada',
