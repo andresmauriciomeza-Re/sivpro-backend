@@ -122,6 +122,13 @@ function enmascararDocumento(numero) {
   return texto.length <= 4 ? '****' : `****${texto.slice(-4)}`;
 }
 
+/** "queiner" → "Queiner", "MARÍA" → "María" (saludo del correo). */
+function aCapitalo(texto) {
+  const t = String(texto || '').trim();
+  if (!t) return t;
+  return t.charAt(0).toLocaleUpperCase('es') + t.slice(1).toLocaleLowerCase('es');
+}
+
 /** "17 de octubre de 2026, 11:09 p. m." en zona horaria America/Bogota. */
 function formatearFechaBogota(fecha = new Date()) {
   const opciones = { timeZone: 'America/Bogota' };
@@ -169,7 +176,7 @@ export function buildWelcomeEmail(datos) {
   const tipoDocumento = String(datos?.tipoDocumento || '').trim();
   const numeroDocumento = String(datos?.numeroDocumento || '').trim();
 
-  const primerNombre = nombre.split(/\s+/)[0] || 'cliente';
+  const primerNombre = aCapitalo(nombre.split(/\s+/)[0]) || 'cliente';
   const etiquetaTipo =
     ETIQUETAS_DOCUMENTO[tipoDocumento] || tipoDocumento || '—';
   const documentoMostrado = numeroDocumento
@@ -191,6 +198,11 @@ export function buildWelcomeEmail(datos) {
   const horarioSegura = escaparHtml(local.horario);
   const telefonoLocalSeguro = escaparHtml(local.telefono);
 
+  // Color heredado + !important donde Gmail/Apple suelen autodetectar enlaces
+  // (correo, teléfonos, dirección, fecha) para que nunca se vean en azul.
+  const envolver = (valor, color) =>
+    `<span style="color:${color} !important;">${valor}</span>`;
+
   const filaResumen = (etiqueta, valor, ultima = false) => {
     const borde = ultima ? '' : 'border-bottom:1px solid #eeeeee;';
     return `
@@ -208,7 +220,7 @@ export function buildWelcomeEmail(datos) {
     (paso, i) => `
             <tr>
               <td width="34" valign="top" style="padding:6px 10px 6px 0;">
-                <div style="width:26px;height:26px;line-height:26px;border-radius:50%;background-color:#C62828;color:#ffffff;font-size:14px;font-weight:bold;text-align:center;">${i + 1}</div>
+                <div style="width:26px;height:26px;line-height:26px;border-radius:50%;background-color:#B94A48;color:#ffffff;font-size:14px;font-weight:bold;text-align:center;">${i + 1}</div>
               </td>
               <td valign="top" style="padding:8px 0;font-size:14px;line-height:1.5;color:#444444;">
                 ${escaparHtml(paso)}
@@ -224,6 +236,14 @@ export function buildWelcomeEmail(datos) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light only">
   <title>Bienvenido a Pizzería La Sirena</title>
+  <style>
+    /* Apple Mail / iOS: los detectores de datos no deben pintar de azul
+       direcciones, teléfonos ni fechas del correo. */
+    a[x-apple-data-detectors] {
+      color: inherit !important;
+      text-decoration: none !important;
+    }
+  </style>
 </head>
 <body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
@@ -234,10 +254,10 @@ export function buildWelcomeEmail(datos) {
       <td align="center">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
           <tr>
-            <td align="center" style="background-color:#C62828;padding:28px 20px 22px 20px;">
-              <img src="cid:logo-sivpro" alt="S.I.V.PRO - Pizzería La Sirena" width="110" height="110" style="display:block;margin:0 auto;width:110px;height:110px;border:0;outline:none;text-decoration:none;border-radius:50%;">
-              <div style="color:#ffffff;font-size:24px;font-weight:bold;letter-spacing:3px;margin-top:14px;">S.I.V.PRO</div>
-              <div style="color:#ffd6d6;font-size:13px;margin-top:4px;">Pizzería La Sirena</div>
+            <td align="center" style="background-color:#B94A48;padding:24px 20px;">
+              <img src="cid:logo-sivpro" alt="S.I.V.PRO - Pizzería La Sirena" width="180" height="auto" style="display:block;margin:0 auto;width:180px;height:auto;border:0;outline:none;text-decoration:none;border-radius:50%;">
+              <a href="${urlSegura}" style="color:#ffffff !important;text-decoration:none !important;display:inline-block;font-size:24px;font-weight:bold;letter-spacing:3px;margin-top:8px;">S.I.V.PRO</a>
+              <div style="color:#ffd6d6;font-size:13px;margin-top:2px;">Pizzería La Sirena</div>
             </td>
           </tr>
           <tr>
@@ -263,10 +283,13 @@ export function buildWelcomeEmail(datos) {
               <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Resumen de la cuenta</p>
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
                 ${filaResumen('Nombre completo', nombreSeguro)}
-                ${filaResumen('Correo', correoSeguro)}
+                ${filaResumen(
+                  'Correo',
+                  `<a href="mailto:${correoSeguro}" style="color:#222222 !important;text-decoration:none !important;">${correoSeguro}</a>`
+                )}
                 ${filaResumen('Documento', documentoSeguro)}
-                ${filaResumen('Teléfono', telefonoSeguro)}
-                ${filaResumen('Fecha de registro', fechaSegura, true)}
+                ${filaResumen('Teléfono', envolver(telefonoSeguro, '#222222'))}
+                ${filaResumen('Fecha de registro', envolver(fechaSegura, '#222222'), true)}
               </table>
             </td>
           </tr>
@@ -280,16 +303,16 @@ export function buildWelcomeEmail(datos) {
           </tr>
           <tr>
             <td align="center" style="padding:24px 28px 8px 28px;">
-              <a href="${urlSegura}" style="display:inline-block;background-color:#C62828;color:#ffffff;font-size:16px;font-weight:bold;text-decoration:none;padding:16px 34px;border-radius:10px;">Hacer mi primer pedido</a>
+              <a href="${urlSegura}" style="display:inline-block;background-color:#B94A48;color:#ffffff;font-size:16px;font-weight:bold;text-decoration:none;padding:16px 34px;border-radius:10px;">Hacer mi primer pedido</a>
             </td>
           </tr>
           <tr>
             <td style="padding:20px 28px 6px 28px;">
               <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Datos de nuestro local</p>
               <p style="margin:0 0 6px 0;font-size:14px;line-height:1.6;color:#555555;">
-                <strong>Dirección:</strong> ${direccionSegura}<br>
-                <strong>Horario:</strong> ${horarioSegura}<br>
-                <strong>Teléfono:</strong> ${telefonoLocalSeguro}
+                <strong>Dirección:</strong> ${envolver(direccionSegura, '#555555')}<br>
+                <strong>Horario:</strong> ${envolver(horarioSegura, '#555555')}<br>
+                <strong>Teléfono:</strong> ${envolver(telefonoLocalSeguro, '#555555')}
               </p>
             </td>
           </tr>
