@@ -1,5 +1,9 @@
 import nodemailer from 'nodemailer';
-import { buildResetEmail, buildWelcomeEmail } from '../utils/emailTemplates.js';
+import {
+  buildPasswordChangedEmail,
+  buildResetEmail,
+  buildWelcomeEmail,
+} from '../utils/emailTemplates.js';
 
 let transporte = null;
 
@@ -79,6 +83,35 @@ export async function enviarCorreoBienvenida(datos) {
   } catch (error) {
     console.error(
       `No se pudo enviar el bienvenida a ${correo}: ${error?.code || error?.message || error}`
+    );
+  }
+}
+
+/**
+ * Aviso corto de "tu contraseña fue cambiada". Fire-and-forget: captura su
+ * propio error y NUNCA lanza, para que el cambio de contraseña no se vea
+ * afectado si el SMTP falla. Éxito y fallo se registran en consola.
+ */
+export async function enviarAvisoCambioContrasena(datos) {
+  const correo = datos?.correo;
+  if (!hayCredenciales()) {
+    console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de cambio omitido');
+    return;
+  }
+
+  try {
+    const mail = buildPasswordChangedEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: process.env.MAIL_FROM || `"S.I.V.PRO La Sirena" <${process.env.MAIL_USER}>`,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    });
+    console.log(`Aviso de cambio de contraseña enviado a ${correo}`);
+  } catch (error) {
+    console.error(
+      `No se pudo enviar el aviso de cambio de contraseña a ${correo}: ${error?.code || error?.message || error}`
     );
   }
 }

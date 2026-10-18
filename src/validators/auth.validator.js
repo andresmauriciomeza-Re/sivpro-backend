@@ -100,6 +100,51 @@ export function validarFormatoContrasena(contrasena) {
   }
 }
 
+/**
+ * PUT /auth/cambiar-contrasena: valida que la actual venga como texto y que
+ * la nueva cumpla la MISMA fortaleza que el registro (8+, mayúscula, minúscula,
+ * número, sin espacios). Los mensajes son distintos a los del login para que
+ * el frontend pueda mostrar cada error debajo del campo correspondiente.
+ */
+export function validarCambioContrasena(req, res, next) {
+  const { contrasenaActual, contrasenaNueva } = req.body || {};
+
+  if (
+    typeof contrasenaActual !== 'string' ||
+    contrasenaActual.length === 0 ||
+    contrasenaActual.length > MAX_LENGTH
+  ) {
+    throw new AppError(
+      'La contraseña actual es obligatoria y no puede superar 255 caracteres.',
+      400
+    );
+  }
+
+  if (
+    typeof contrasenaNueva !== 'string' ||
+    contrasenaNueva.length === 0 ||
+    contrasenaNueva.length > MAX_CONTRASENA_CARACTERES ||
+    Buffer.byteLength(contrasenaNueva, 'utf8') > MAX_CONTRASENA_BYTES ||
+    /\s/.test(contrasenaNueva) ||
+    !REGEX_PASSWORD_SEGURA.test(contrasenaNueva) ||
+    contrasenaNueva.length < MIN_CONTRASENA
+  ) {
+    throw new AppError(
+      'La nueva contraseña no cumple los requisitos: mínimo 8 caracteres, mayúscula, minúscula y número, sin espacios.',
+      400
+    );
+  }
+
+  if (contrasenaNueva === contrasenaActual) {
+    throw new AppError(
+      'La nueva contraseña debe ser diferente a la actual.',
+      400
+    );
+  }
+
+  next();
+}
+
 export function validarRegistro(req, res, next) {
   const body = req.body || {};
 

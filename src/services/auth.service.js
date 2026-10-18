@@ -139,6 +139,50 @@ export async function obtenerUsuarioPorId(idUsuario) {
   return armarUsuario(usuario, permisos);
 }
 
+const CONSULTA_CAMBIO_CONTRASENA = `
+  SELECT u.id_usuario, u.nombre, u.correo, u.contrasena, u.estado
+  FROM tb_usuarios u
+  WHERE u.id_usuario = $1
+`;
+
+const UPDATE_CONTRASENA = `
+  UPDATE tb_usuarios SET contrasena = $1 WHERE id_usuario = $2
+`;
+
+/**
+ * Cambia la contraseña del usuario autenticado: verifica la actual con
+ * bcrypt, exige que la nueva sea distinta y guarda el hash nuevo.
+ * Devuelve { nombre, correo } para el aviso por correo (fire-and-forget).
+ */
+export async function cambiarContrasenaUsuario(
+  idUsuario,
+  contrasenaActual,
+  contrasenaNueva
+) {
+  const { rows } = await consultar(CONSULTA_CAMBIO_CONTRASENA, [idUsuario]);
+  const usuario = rows[0];
+
+  if (!usuario || !usuario.estado) {
+    throw new AppError('No autorizado.', 401);
+  }
+
+  let coincide = false;
+  try {
+    coincide = await bcrypt.compare(contrasenaActual, usuario.contrasena);
+  } catch (error) {
+    coincide = false;
+  }
+
+  if (!coincide) {
+    throw new AppError('La contraseña actual es incorrecta.', 400);
+  }
+
+  const hash = await bcrypt.hash(contrasenaNueva, 10);
+  await consultar(UPDATE_CONTRASENA, [hash, idUsuario]);
+
+  return { nombre: usuario.nombre, correo: usuario.correo };
+}
+
 const CONSULTA_DOCUMENTO_EXISTE = `
   SELECT 1 FROM tb_usuarios WHERE id_usuario = $1
 `;

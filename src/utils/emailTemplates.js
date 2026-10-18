@@ -385,3 +385,71 @@ export function buildWelcomeEmail(datos) {
     attachments,
   };
 }
+
+// ─────────────────────────── AVISO DE CAMBIO DE CONTRASEÑA ───────────────────────────
+
+/**
+ * Correo corto de confirmación cuando el usuario cambia su contraseña desde
+ * su perfil (PUT /auth/cambiar-contrasena). Sin logo adjunto: el aviso es
+ * breve a propósito, solo confirma el cambio y da el contacto de seguridad.
+ */
+export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
+  const nombreSeguro = escaparHtml(nombre || 'usuario');
+  const fechaTexto = escaparHtml(fecha || formatearFechaBogota());
+  const telefono = escaparHtml(datosDelLocal().telefono);
+
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <title>Tu contraseña fue cambiada</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+          <tr>
+            <td align="center" style="background-color:#B94A48;padding:20px;">
+              <div style="color:#ffffff;font-size:20px;font-weight:bold;letter-spacing:3px;">S.I.V.PRO</div>
+              <div style="color:#ffffff;font-size:12px;margin-top:4px;">Pizzería La Sirena</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 28px 8px 28px;color:#222222;">
+              <h1 style="margin:0 0 12px 0;font-size:20px;">Tu contraseña de S.I.V.PRO fue cambiada</h1>
+              <p style="margin:0 0 10px 0;font-size:15px;line-height:1.6;color:#555555;">
+                Hola, ${nombreSeguro}. Confirmamos que la contraseña de tu cuenta fue cambiada el ${fechaTexto}.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 28px 28px 28px;">
+              <p style="margin:0;font-size:14px;color:#555555;line-height:1.5;">
+                <strong>Si no fuiste tú, contáctanos de inmediato</strong> al ${telefono}.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="background-color:#fafafa;padding:16px;font-size:12px;color:#999999;">
+              © S.I.V.PRO · Pizzería La Sirena
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+  `.trim();
+
+  const text = `Hola ${nombre}, tu contraseña de S.I.V.PRO fue cambiada el ${fechaTexto}. Si no fuiste tú, contáctanos de inmediato al ${telefono}.`;
+
+  return {
+    subject: 'Tu contraseña de S.I.V.PRO fue cambiada',
+    html,
+    text,
+  };
+}
