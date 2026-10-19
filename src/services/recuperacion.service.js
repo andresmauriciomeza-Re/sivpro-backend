@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import AppError from '../errors/AppError.js';
 import { query } from '../config/db.js';
-import { enviarCodigoRecuperacion } from './mail.service.js';
+import { enviarAvisoCambioContrasena, enviarCodigoRecuperacion } from './mail.service.js';
 import {
   registrarFalloVerificacion,
   reiniciarFallosVerificacion,
@@ -75,7 +75,7 @@ export async function procesarSolicitudRecuperacion(correo) {
 
     await enviarCodigoRecuperacion(usuario.correo, usuario.nombre, codigo);
   } catch (error) {
-    console.error('Error al procesar la recuperación:', error.code);
+    console.error('Error al procesar la recuperación:', error?.code || error?.message || error);
   }
 }
 
@@ -124,6 +124,18 @@ export async function restablecerContrasena(correo, codigo, contrasena) {
   if (rowCount === 0) {
     throw new AppError(CODIGO_INVALIDO, 400);
   }
+
+  // Aviso de seguridad: se dispara DESPUÉS de guardar con éxito y sin
+  // esperarlo (fire-and-forget). Si el SMTP falla, el cambio ya está hecho
+  // y la respuesta sigue siendo 200; el error queda en la consola.
+  enviarAvisoCambioContrasena({
+    correo: usuario.correo,
+    nombre: usuario.nombre,
+  }).catch((error) => {
+    console.error(
+      `No se pudo enviar el aviso de cambio de contraseña a ${usuario.correo}: ${error?.code || error?.message || error}`
+    );
+  });
 
   return { mensaje: CONTRASENA_ACTUALIZADA };
 }
