@@ -57,7 +57,7 @@ async function consultar(sql, params) {
   }
 }
 
-async function obtenerPermisos(idRol, idUsuario) {
+export async function obtenerPermisos(idRol, idUsuario) {
   const [base, extra] = await Promise.all([
     consultar(PERMISOS_ROL_BASE, [idRol]),
     consultar(PERMISOS_ROLES_EXTRA, [idUsuario]),

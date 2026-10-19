@@ -5,6 +5,7 @@ import healthRouter from './routes/health.routes.js';
 import authRouter from './routes/auth.routes.js';
 import uploadsRouter from './routes/uploads.routes.js';
 import recuperacionRouter from './routes/recuperacion.routes.js';
+import usuariosRouter from './routes/usuarios.routes.js';
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use('/api', healthRouter);
 app.use('/api', authRouter);
 app.use('/api', uploadsRouter);
 app.use('/api', recuperacionRouter);
+app.use('/api', usuariosRouter);
 
 app.use((req, res) => {
   res.status(404).json({
