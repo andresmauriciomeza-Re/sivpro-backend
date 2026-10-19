@@ -1,6 +1,9 @@
 import AppError from '../errors/AppError.js';
+import bcrypt from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { query, transaction } from '../config/db.js';
 import { obtenerPermisos } from './auth.service.js';
+import { enviarCorreoBienvenida } from './mail.service.js';
 
 // La cuenta de super administradora no se puede eliminar desde ningún flujo
 // (misma doble condición que usa el panel: id de la semilla + correo Gloria).
@@ -211,4 +214,83 @@ export async function buscarClientePorDocumento(numero, tipoDocumento) {
     LIMIT 1
   `, [String(numero), tipoDocumento || null]);
   return rows[0] ?? null;
+}
+
+function mapearErrorCliente(error) {
+  if (error.code === '23505') {
+    if (error.constraint === 'tb_usuarios_correo_key') return new AppError('Este correo ya está registrado.', 409);
+    if (error.constraint === 'tb_usuarios_pkey' || error.constraint === 'tb_cliente_id_usuario_key') return new AppError('Este documento ya está registrado.', 409);
+    return new AppError('El cliente ya está registrado.', 409);
+  }
+  return error;
+}
+
+export async function crearCliente(datos) {
+  const { rows: documentoExistente } = await query('SELECT 1 FROM tb_usuarios WHERE id_usuario = $1', [datos.numeroDocumento]);
+  if (documentoExistente.length) throw new AppError('Este documento ya está registrado.', 409);
+  const { rows: correoExistente } = await query('SELECT 1 FROM tb_usuarios WHERE LOWER(correo) = LOWER($1)', [datos.correo]);
+  if (correoExistente.length) throw new AppError('Este correo ya está registrado.', 409);
+  const contrasenaTemporal = randomBytes(48).toString('base64url');
+  const hash = await bcrypt.hash(contrasenaTemporal, 10);
+  try {
+    await transaction(async (client) => {
+      const { rows: roles } = await client.query("SELECT id_rol FROM tb_roles WHERE nombre = 'Cliente'");
+      if (!roles[0]) throw new AppError('No existe el rol Cliente.', 500);
+      await client.query(
+        `INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, telefono, id_rol, estado)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [datos.numeroDocumento, datos.tipoDocumento, datos.nombre, datos.correo, hash, datos.telefono, roles[0].id_rol, datos.estado !== false]
+      );
+      await client.query('INSERT INTO tb_cliente (id_usuario, estado) VALUES ($1, $2)', [datos.numeroDocumento, datos.estado !== false]);
+    });
+  } catch (error) {
+    throw mapearErrorCliente(error);
+  }
+  void enviarCorreoBienvenida({ ...datos, creadoPorAdmin: true });
+  return { mensaje: 'Cliente creado correctamente.' };
+}
+
+export async function editarCliente(id, datos) {
+  try {
+    const { rows: correoExistente } = await query(
+      'SELECT 1 FROM tb_usuarios WHERE LOWER(correo) = LOWER($1) AND id_usuario <> $2',
+      [datos.correo, String(id)]
+    );
+    if (correoExistente.length) throw new AppError('Este correo ya está registrado en otra cuenta.', 409);
+    const { rowCount } = await query(
+      `UPDATE tb_usuarios u SET nombre = $1, correo = $2, telefono = $3
+       WHERE u.id_usuario = $4 AND EXISTS (SELECT 1 FROM tb_cliente c WHERE c.id_usuario = u.id_usuario)`,
+      [datos.nombre, datos.correo, datos.telefono, String(id)]
+    );
+    if (!rowCount) throw new AppError('Cliente no encontrado.', 404);
+  } catch (error) {
+    if (error.code === '23505' && error.constraint === 'tb_usuarios_correo_key') {
+      throw new AppError('Este correo ya está registrado en otra cuenta.', 409);
+    }
+    throw mapearErrorCliente(error);
+  }
+  return { mensaje: 'Cliente actualizado correctamente.' };
+}
+
+export async function cambiarEstadoCliente(id, estado, idSolicitante) {
+  const idObjetivo = String(id);
+  if (estado === false && idObjetivo === String(idSolicitante)) {
+    throw new AppError('No puedes desactivar tu propia cuenta.', 403);
+  }
+  const { rows } = await query(
+    `SELECT u.correo, EXISTS (SELECT 1 FROM tb_empleado e WHERE e.id_usuario = u.id_usuario) AS es_empleado
+     FROM tb_usuarios u JOIN tb_cliente c ON c.id_usuario = u.id_usuario WHERE u.id_usuario = $1`,
+    [idObjetivo]
+  );
+  if (!rows[0]) throw new AppError('Cliente no encontrado.', 404);
+  if (estado === false && (idObjetivo === SUPER_ADMIN_ID || String(rows[0].correo).toLowerCase() === SUPER_ADMIN_CORREO)) {
+    throw new AppError('No se puede desactivar la cuenta de Gloria.', 403);
+  }
+  await transaction(async (client) => {
+    await client.query('UPDATE tb_cliente SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
+    if (!rows[0].es_empleado) {
+      await client.query('UPDATE tb_usuarios SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
+    }
+  });
+  return { mensaje: 'Estado del cliente actualizado correctamente.' };
 }

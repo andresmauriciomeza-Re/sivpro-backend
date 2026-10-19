@@ -1,14 +1,26 @@
 import { Router } from 'express';
+import AppError from '../errors/AppError.js';
 import { verificarToken } from '../middlewares/auth.js';
 import { requierePermiso } from '../middlewares/permisos.js';
+import { validarAltaCliente, validarEdicionCliente } from '../validators/auth.validator.js';
 import {
   borrarUsuario,
+  cambiarEstadoClienteControlador,
+  crearClienteControlador,
+  editarClienteControlador,
   obtenerClientePorDocumento,
   obtenerClientes,
   obtenerUsuarios,
 } from '../controllers/usuarios.controller.js';
 
 const router = Router();
+
+router.post('/clientes', verificarToken, requierePermiso({ modulo: 'Ventas', nombre: 'Clientes', privilegio: 'Crear', mensaje: 'No tienes permiso para crear clientes.' }), validarAltaCliente, crearClienteControlador);
+router.put('/clientes/:id', verificarToken, requierePermiso({ modulo: 'Ventas', nombre: 'Clientes', privilegio: 'Editar', mensaje: 'No tienes permiso para editar clientes.' }), validarEdicionCliente, editarClienteControlador);
+router.patch('/clientes/:id/estado', verificarToken, requierePermiso({ modulo: 'Ventas', nombre: 'Clientes', privilegio: 'Editar', mensaje: 'No tienes permiso para editar clientes.' }), (req, res, next) => {
+  if (typeof req.body?.estado !== 'boolean') return next(new AppError('El estado debe ser activo o inactivo.', 400));
+  next();
+}, cambiarEstadoClienteControlador);
 
 router.get(
   '/usuarios',
