@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { verificarToken } from '../middlewares/auth.js';
 import { requierePermiso } from '../middlewares/permisos.js';
-import { borrarUsuario, obtenerClientes, obtenerUsuarios } from '../controllers/usuarios.controller.js';
+import {
+  borrarUsuario,
+  obtenerClientePorDocumento,
+  obtenerClientes,
+  obtenerUsuarios,
+} from '../controllers/usuarios.controller.js';
 
 const router = Router();
 
@@ -27,6 +32,18 @@ router.get(
     mensaje: 'No tienes permiso para ver clientes.',
   }),
   obtenerClientes
+);
+
+router.get(
+  '/clientes/documento/:numero',
+  verificarToken,
+  requierePermiso({
+    modulo: 'Ventas',
+    nombre: 'Ventas',
+    privilegio: 'Crear',
+    mensaje: 'No tienes permiso para crear ventas.',
+  }),
+  obtenerClientePorDocumento
 );
 
 // Autorización por PERMISO (Usuarios → Eliminar), no por nombre de rol:

@@ -197,3 +197,18 @@ export async function listarClientes() {
   `, []);
   return rows;
 }
+
+export async function buscarClientePorDocumento(numero, tipoDocumento) {
+  const { rows } = await query(`
+    SELECT id_usuario AS documento,
+           tipo_documento AS "tipoDocumento",
+           nombre,
+           telefono,
+           estado
+    FROM tb_usuarios
+    WHERE id_usuario = $1
+      AND ($2::text IS NULL OR tipo_documento = $2)
+    LIMIT 1
+  `, [String(numero), tipoDocumento || null]);
+  return rows[0] ?? null;
+}
