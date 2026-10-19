@@ -82,7 +82,7 @@ export function buildResetEmail({ nombre, codigo, minutos = 15 }) {
           <tr>
             <td style="padding:0 28px 28px 28px;">
               <p style="margin:0 0 10px 0;font-size:14px;color:#555555;">Este código vence en <strong>${minutos} minutos</strong>.</p>
-              <p style="margin:0 0 10px 0;font-size:13px;color:#888888;line-height:1.5;">Por tu seguridad, no compartas este código con nadie. El equipo de ${envolver('S.I.V.PRO', '#555555')} nunca te lo pedirá.</p>
+              <p style="margin:0 0 10px 0;font-size:13px;color:#888888;line-height:1.5;">Por tu seguridad, no compartas este código con nadie. El equipo de ${envolver('S.I.V&#8204;.PRO', '#555555')} nunca te lo pedirá.</p>
               <p style="margin:0;font-size:13px;color:#888888;line-height:1.5;">Si no fuiste tú, ignora este mensaje. Tu contraseña no cambiará.</p>
             </td>
           </tr>
@@ -472,7 +472,7 @@ export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
           ${encabezadoCompartido()}
           <tr>
             <td style="padding:32px 28px 8px 28px;color:#222222;">
-              <h1 style="margin:0 0 12px 0;font-size:22px;">Tu contraseña de <span style="color:#222222 !important;text-decoration:none !important;">S.I.V.PRO</span> fue cambiada</h1>
+              <h1 style="margin:0 0 12px 0;font-size:22px;">Tu contraseña de <span style="color:#222222 !important;text-decoration:none !important;">S.I.V&#8204;.PRO</span> fue cambiada</h1>
               <p style="margin:0 0 10px 0;font-size:15px;line-height:1.6;color:#555555;">
                 Hola, ${nombreSeguro}. Confirmamos que la contraseña de tu cuenta fue cambiada el ${fechaTexto}
               </p>
