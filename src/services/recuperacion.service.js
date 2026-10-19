@@ -30,7 +30,7 @@ const ACTUALIZAR_CODIGO = `
 `;
 
 const CONSULTA_CODIGO_VIGENTE = `
-  SELECT id_usuario, codigo_recuperacion
+  SELECT id_usuario, nombre, correo, codigo_recuperacion
   FROM tb_usuarios
   WHERE LOWER(correo) = LOWER($1)
     AND codigo_recuperacion IS NOT NULL
@@ -128,14 +128,21 @@ export async function restablecerContrasena(correo, codigo, contrasena) {
   // Aviso de seguridad: se dispara DESPUÉS de guardar con éxito y sin
   // esperarlo (fire-and-forget). Si el SMTP falla, el cambio ya está hecho
   // y la respuesta sigue siendo 200; el error queda en la consola.
-  enviarAvisoCambioContrasena({
-    correo: usuario.correo,
-    nombre: usuario.nombre,
-  }).catch((error) => {
+  const correoAviso = typeof usuario.correo === 'string' ? usuario.correo.trim() : '';
+  if (!correoAviso) {
     console.error(
-      `No se pudo enviar el aviso de cambio de contraseña a ${usuario.correo}: ${error?.code || error?.message || error}`
+      `Aviso de cambio de contraseña omitido: el usuario ${usuario.id_usuario} no tiene correo definido`
     );
-  });
+  } else {
+    enviarAvisoCambioContrasena({
+      correo: correoAviso,
+      nombre: usuario.nombre,
+    }).catch((error) => {
+      console.error(
+        `No se pudo enviar el aviso de cambio de contraseña a ${correoAviso}: ${error?.code || error?.message || error}`
+      );
+    });
+  }
 
   return { mensaje: CONTRASENA_ACTUALIZADA };
 }

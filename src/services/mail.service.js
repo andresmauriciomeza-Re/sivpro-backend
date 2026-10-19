@@ -95,7 +95,11 @@ export async function enviarCorreoBienvenida(datos) {
  * afectado si el SMTP falla. Éxito y fallo se registran en consola.
  */
 export async function enviarAvisoCambioContrasena(datos) {
-  const correo = datos?.correo;
+  const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
+  if (!correo) {
+    console.error('Aviso de cambio de contraseña omitido: sin correo de destino');
+    return;
+  }
   if (!hayCredenciales()) {
     console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de cambio omitido');
     return;
