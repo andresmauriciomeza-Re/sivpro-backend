@@ -91,7 +91,7 @@ export async function enviarCorreoBienvenida(datos) {
 
 /**
  * Aviso corto de "tu contraseña fue cambiada". Fire-and-forget: captura su
- * propio error y NUNCA lanza, para que el cambio de contraseña no se vea
+ * propio error y NUNCA lanza, para que el restablecimiento no se vea
  * afectado si el SMTP falla. Éxito y fallo se registran en consola.
  */
 export async function enviarAvisoCambioContrasena(datos) {
@@ -110,6 +110,7 @@ export async function enviarAvisoCambioContrasena(datos) {
       subject: mail.subject,
       text: mail.text,
       html: mail.html,
+      attachments: mail.attachments,
     });
     console.log(`Aviso de cambio de contraseña enviado a ${correo}`);
   } catch (error) {
