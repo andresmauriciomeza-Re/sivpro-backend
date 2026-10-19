@@ -48,7 +48,9 @@ const LETRA = '[A-Za-z\\u00C1-\\u00D6\\u00D8-\\u00DC\\u00E1-\\u00F6\\u00F8-\\u00
 const REGEX_NOMBRE = new RegExp(`^${LETRA}+(?: ${LETRA}+)*$`);
 const REGEX_CORREO =
   /^[A-Za-z0-9._-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
-const REGEX_TELEFONO = /^3\d{9}$/;
+// Regla única de teléfono (misma que el frontend): solo números, entre 7 y
+// 15 dígitos. Ya no se exige empezar por 3 (acepta fijo o celular).
+const REGEX_TELEFONO = /^\d{7,15}$/;
 const REGEX_PASSWORD_SEGURA = /(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
 
 const MAX_CORREO = 60;
@@ -67,7 +69,7 @@ const MENSAJES = {
   numeroDocumento: 'El número de documento no es válido.',
   nombre: 'El nombre no es válido.',
   correo: 'Ingresa un correo válido y sin espacios.',
-  telefono: 'El teléfono debe tener 10 dígitos y comenzar por 3.',
+  telefono: 'El teléfono debe tener solo números, entre 7 y 15 dígitos.',
   contrasena: 'La contraseña no cumple los requisitos.',
 };
 
@@ -101,55 +103,10 @@ export function validarFormatoContrasena(contrasena) {
 }
 
 /**
- * PUT /auth/cambiar-contrasena: valida que la actual venga como texto y que
- * la nueva cumpla la MISMA fortaleza que el registro (8+, mayúscula, minúscula,
- * número, sin espacios). Los mensajes son distintos a los del login para que
- * el frontend pueda mostrar cada error debajo del campo correspondiente.
- */
-export function validarCambioContrasena(req, res, next) {
-  const { contrasenaActual, contrasenaNueva } = req.body || {};
-
-  if (
-    typeof contrasenaActual !== 'string' ||
-    contrasenaActual.length === 0 ||
-    contrasenaActual.length > MAX_LENGTH
-  ) {
-    throw new AppError(
-      'La contraseña actual es obligatoria y no puede superar 255 caracteres.',
-      400
-    );
-  }
-
-  if (
-    typeof contrasenaNueva !== 'string' ||
-    contrasenaNueva.length === 0 ||
-    contrasenaNueva.length > MAX_CONTRASENA_CARACTERES ||
-    Buffer.byteLength(contrasenaNueva, 'utf8') > MAX_CONTRASENA_BYTES ||
-    /\s/.test(contrasenaNueva) ||
-    !REGEX_PASSWORD_SEGURA.test(contrasenaNueva) ||
-    contrasenaNueva.length < MIN_CONTRASENA
-  ) {
-    throw new AppError(
-      'La nueva contraseña no cumple los requisitos: mínimo 8 caracteres, mayúscula, minúscula y número, sin espacios.',
-      400
-    );
-  }
-
-  if (contrasenaNueva === contrasenaActual) {
-    throw new AppError(
-      'La nueva contraseña debe ser diferente a la actual.',
-      400
-    );
-  }
-
-  next();
-}
-
-/**
  * PUT /auth/perfil: acepta SOLO correo y teléfono; cualquier otro campo del
  * body (nombre, documento, rol, estado, id…) se descarta al reescribir
- * req.body. El teléfono usa el mismo criterio del frontend (7-15 dígitos,
- * más laxo que el registro para no bloquear teléfonos ya guardados).
+ * req.body. El teléfono usa la MISMA regla única que el registro (solo
+ * números, entre 7 y 15 dígitos), centralizada en MENSAJES/REGEX_TELEFONO.
  */
 export function validarActualizacionPerfil(req, res, next) {
   const body = req.body || {};
@@ -160,8 +117,8 @@ export function validarActualizacionPerfil(req, res, next) {
     throw new AppError('El teléfono es obligatorio.', 400);
   }
   const telefono = body.telefono.replace(/\s+/g, '');
-  if (!/^\d{7,15}$/.test(telefono)) {
-    throw new AppError('El teléfono debe tener entre 7 y 15 dígitos.', 400);
+  if (!REGEX_TELEFONO.test(telefono)) {
+    throw new AppError(MENSAJES.telefono, 400);
   }
 
   req.body = { correo, telefono };

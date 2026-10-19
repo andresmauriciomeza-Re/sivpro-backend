@@ -45,7 +45,8 @@ export async function enviarCodigoRecuperacion(correo, nombre, codigo) {
 
   try {
     await obtenerTransporte().sendMail({
-      from: `"S.I.V.PRO La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,
@@ -72,7 +73,8 @@ export async function enviarCorreoBienvenida(datos) {
   try {
     const mail = buildWelcomeEmail(datos);
     await obtenerTransporte().sendMail({
-      from: process.env.MAIL_FROM || `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,
@@ -89,11 +91,15 @@ export async function enviarCorreoBienvenida(datos) {
 
 /**
  * Aviso corto de "tu contraseña fue cambiada". Fire-and-forget: captura su
- * propio error y NUNCA lanza, para que el cambio de contraseña no se vea
+ * propio error y NUNCA lanza, para que el restablecimiento no se vea
  * afectado si el SMTP falla. Éxito y fallo se registran en consola.
  */
 export async function enviarAvisoCambioContrasena(datos) {
-  const correo = datos?.correo;
+  const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
+  if (!correo) {
+    console.error('Aviso de cambio de contraseña omitido: sin correo de destino');
+    return;
+  }
   if (!hayCredenciales()) {
     console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de cambio omitido');
     return;
@@ -102,11 +108,13 @@ export async function enviarAvisoCambioContrasena(datos) {
   try {
     const mail = buildPasswordChangedEmail(datos);
     await obtenerTransporte().sendMail({
-      from: process.env.MAIL_FROM || `"S.I.V.PRO La Sirena" <${process.env.MAIL_USER}>`,
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
       to: correo,
       subject: mail.subject,
       text: mail.text,
       html: mail.html,
+      attachments: mail.attachments,
     });
     console.log(`Aviso de cambio de contraseña enviado a ${correo}`);
   } catch (error) {
