@@ -168,3 +168,32 @@ export async function eliminarUsuario(idObjetivo, idSolicitante) {
 
   return { accion: 'eliminado', mensaje: 'Usuario eliminado correctamente' };
 }
+
+// Las consultas de listado proyectan únicamente datos de presentación.
+// No seleccionar contrasena ni campos de recuperación, aunque existan en tabla.
+export async function listarUsuarios() {
+  const { rows } = await query(`
+    SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo,
+           u.telefono, u.estado, u.id_rol, r.nombre AS rol,
+           r.estado AS rol_estado,
+           EXISTS (SELECT 1 FROM tb_empleado e WHERE e.id_usuario = u.id_usuario) AS es_empleado
+    FROM tb_usuarios u
+    JOIN tb_roles r ON r.id_rol = u.id_rol
+    ORDER BY u.nombre, u.id_usuario
+  `, []);
+  return rows;
+}
+
+export async function listarClientes() {
+  const { rows } = await query(`
+    SELECT c.id_cliente, c.id_usuario, c.estado AS cliente_estado,
+           u.tipo_documento, u.nombre, u.correo, u.telefono,
+           u.estado AS usuario_estado, u.id_rol, r.nombre AS rol,
+           r.estado AS rol_estado
+    FROM tb_cliente c
+    JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
+    JOIN tb_roles r ON r.id_rol = u.id_rol
+    ORDER BY u.nombre, c.id_cliente
+  `, []);
+  return rows;
+}

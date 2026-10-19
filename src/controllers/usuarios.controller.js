@@ -1,4 +1,20 @@
-import { eliminarUsuario } from '../services/usuarios.service.js';
+import { eliminarUsuario, listarClientes, listarUsuarios } from '../services/usuarios.service.js';
+
+export async function obtenerUsuarios(req, res, next) {
+  try {
+    res.status(200).json(await listarUsuarios());
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function obtenerClientes(req, res, next) {
+  try {
+    res.status(200).json(await listarClientes());
+  } catch (error) {
+    next(error);
+  }
+}
 
 export async function borrarUsuario(req, res, next) {
   try {
