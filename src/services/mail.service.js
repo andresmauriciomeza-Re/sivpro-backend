@@ -3,6 +3,7 @@ import {
   buildPasswordChangedEmail,
   buildResetEmail,
   buildWelcomeEmail,
+  buildMontoFaltanteEmail,
 } from '../utils/emailTemplates.js';
 
 let transporte = null;
@@ -121,6 +122,29 @@ export async function enviarAvisoCambioContrasena(datos) {
     console.error(
       `No se pudo enviar el aviso de cambio de contraseña a ${correo}: ${error?.code || error?.message || error}`
     );
+  }
+}
+
+export async function enviarAvisoMontoFaltante(datos) {
+  const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
+  if (!correo) return;
+  if (!hayCredenciales()) {
+    console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de saldo omitido');
+    return;
+  }
+  try {
+    const mail = buildMontoFaltanteEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      attachments: mail.attachments,
+    });
+  } catch (error) {
+    console.error(`No se pudo enviar aviso de saldo pendiente a ${correo}: ${error?.code || error?.message || error}`);
   }
 }
 
