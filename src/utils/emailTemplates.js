@@ -178,6 +178,73 @@ function urlDelFrontend() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
 }
 
+export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante }) {
+  const nombreCompleto = String(nombre || '').trim() || 'cliente';
+  const nombreSeguro = escaparHtml(nombreCompleto);
+  const numeroVenta = escaparHtml(id);
+  const totalTexto = new Intl.NumberFormat('es-CO', {
+    style: 'currency', currency: 'COP', maximumFractionDigits: 0,
+  }).format(Number(total) || 0);
+  const pagadoTexto = new Intl.NumberFormat('es-CO', {
+    style: 'currency', currency: 'COP', maximumFractionDigits: 0,
+  }).format(Number(pagado) || 0);
+  const faltanteTexto = new Intl.NumberFormat('es-CO', {
+    style: 'currency', currency: 'COP', maximumFractionDigits: 0,
+  }).format(Number(faltante) || 0);
+  const urlPedidos = urlDelFrontend().split(',')[0].trim().replace(/\/+$/, '');
+  const urlPedidosSegura = escaparHtml(urlPedidos);
+  const local = datosDelLocal();
+  const telefonoSeguro = escaparHtml(local.telefono);
+  const telefonoHref = numeroDeTelefono(local.telefono);
+  const subject = `Tu pedido #${id} tiene un saldo pendiente de ${faltanteTexto}`;
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light only"><title>${escaparHtml(subject)}</title></head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;"><tr><td align="center">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+      ${encabezadoCompartido()}
+      <tr><td style="padding:32px 28px 8px;color:#222222;">
+        <h1 style="margin:0 0 12px;font-size:22px;">Hola ${nombreSeguro},</h1>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">Revisamos el pago de tu pedido #${numeroVenta} y el valor recibido es menor al total del pedido.</p>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
+        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;border-bottom:1px solid #eeeeee;">Total del pedido</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;border-bottom:1px solid #eeeeee;"><strong>${escaparHtml(totalTexto)}</strong></td></tr>
+        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;border-bottom:1px solid #eeeeee;">Valor recibido</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;border-bottom:1px solid #eeeeee;">${escaparHtml(pagadoTexto)}</td></tr>
+        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;">Saldo pendiente</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;"><strong>${escaparHtml(faltanteTexto)}</strong></td></tr>
+      </table></td></tr>
+      <tr><td style="padding:12px 28px;color:#555555;font-size:14px;line-height:1.7;">
+        <p>Para continuar, envía el saldo pendiente por el mismo medio de pago que usaste y sube el comprobante en la sección "Mis pedidos".</p>
+        <p style="text-align:center;padding:8px 0 12px;"><a href="${urlPedidosSegura}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:15px;font-weight:bold;text-decoration:none !important;padding:14px 28px;border-radius:9px;">Subir comprobante</a></p>
+        <p>Tu pedido queda en espera hasta que recibamos el comprobante. Cuando lo verifiquemos, continuaremos con tu pedido.</p>
+        <p>Si ya hiciste el pago o tienes alguna duda, comunícate con nosotros al <a href="tel:${telefonoHref}" style="color:#555555 !important;text-decoration:none !important;">${telefonoSeguro}</a>.</p>
+        <p>Gracias por elegir Pizzería La Sirena.</p>
+      </td></tr>
+      ${pieCompartido()}
+    </table>
+  </td></tr></table>
+</body></html>`.trim();
+  const text = [
+    `Hola ${nombreCompleto},`, '',
+    `Revisamos el pago de tu pedido #${id} y el valor recibido es menor al total del pedido.`, '',
+    `Total del pedido: ${totalTexto}`,
+    `Valor recibido: ${pagadoTexto}`,
+    `Saldo pendiente: ${faltanteTexto}`, '',
+    'Para continuar, envía el saldo pendiente por el mismo medio de pago que usaste y sube el comprobante en la sección "Mis pedidos".',
+    `Subir comprobante: ${urlPedidos}`, '',
+    'Tu pedido queda en espera hasta que recibamos el comprobante. Cuando lo verifiquemos, continuaremos con tu pedido.', '',
+    `Si ya hiciste el pago o tienes alguna duda, comunícate con nosotros al ${local.telefono}.`, '',
+    'Gracias por elegir Pizzería La Sirena.',
+  ].join('\n');
+  return {
+    subject,
+    html,
+    text,
+    attachments: [{ filename: 'logo.png', path: RUTA_LOGO, cid: 'logo-sivpro' }],
+  };
+}
+
 // ─────────────────────── ENCABEZADO Y PIE COMPARTIDOS ───────────────────────
 // Los 3 correos (bienvenida, código de recuperación y contraseña cambiada)
 // usan EXACTAMENTE este encabezado y este pie: fondo verde oscuro #14532d
