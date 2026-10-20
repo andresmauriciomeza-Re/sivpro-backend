@@ -7,8 +7,6 @@ import uploadsRouter from './routes/uploads.routes.js';
 import recuperacionRouter from './routes/recuperacion.routes.js';
 import usuariosRouter from './routes/usuarios.routes.js';
 import rolesRouter from './routes/roles.routes.js';
-import productosRouter from './routes/productos.routes.js';
-import ventasRouter from './routes/ventas.routes.js';
 
 const app = express();
 
@@ -42,8 +40,6 @@ app.use('/api', uploadsRouter);
 app.use('/api', recuperacionRouter);
 app.use('/api', usuariosRouter);
 app.use('/api', rolesRouter);
-app.use('/api', productosRouter);
-app.use('/api', ventasRouter);
 
 app.use((req, res) => {
   res.status(404).json({
