@@ -191,3 +191,39 @@ export function validarRegistro(req, res, next) {
 
   next();
 }
+
+// Alta administrativa: mismas reglas públicas del registro, sin aceptar una
+// contraseña del cliente (el servicio genera una aleatoria).
+export function validarAltaCliente(req, res, next) {
+  const body = req.body || {};
+  const tipoOriginal = body.tipoDocumento;
+  const tipo = TIPO_GUARDADO[tipoOriginal];
+  if (!tipo) throw new AppError(MENSAJES.tipoDocumento, 400);
+  const numero = typeof body.numeroDocumento === 'string' ? body.numeroDocumento.trim() : '';
+  const limites = LONGITUD_NUMERO[tipo];
+  if (!/^\d+$/.test(numero) || numero.length < limites.min || numero.length > limites.max) {
+    throw new AppError(MENSAJES.numeroDocumento, 400);
+  }
+  const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
+  if (nombre.length < MIN_NOMBRE || nombre.length > MAX_NOMBRE || !REGEX_NOMBRE.test(nombre)) {
+    throw new AppError(MENSAJES.nombre, 400);
+  }
+  const correo = validarFormatoCorreo(body.correo);
+  const telefono = typeof body.telefono === 'string' ? body.telefono.replace(/\s+/g, '') : '';
+  if (!REGEX_TELEFONO.test(telefono)) throw new AppError(MENSAJES.telefono, 400);
+  req.body = { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono };
+  next();
+}
+
+export function validarEdicionCliente(req, res, next) {
+  const body = req.body || {};
+  const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
+  if (nombre.length < MIN_NOMBRE || nombre.length > MAX_NOMBRE || !REGEX_NOMBRE.test(nombre)) {
+    throw new AppError(MENSAJES.nombre, 400);
+  }
+  const correo = validarFormatoCorreo(body.correo);
+  const telefono = typeof body.telefono === 'string' ? body.telefono.replace(/\s+/g, '') : '';
+  if (!REGEX_TELEFONO.test(telefono)) throw new AppError(MENSAJES.telefono, 400);
+  req.body = { nombre, correo, telefono };
+  next();
+}

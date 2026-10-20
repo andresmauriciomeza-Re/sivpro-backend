@@ -251,6 +251,9 @@ export function buildWelcomeEmail(datos) {
     ? `${etiquetaTipo} ${enmascararDocumento(numeroDocumento)}`
     : '—';
   const fechaRegistro = datos?.fechaRegistro || formatearFechaBogota();
+  const accesoAdmin = datos?.creadoPorAdmin === true
+    ? '<p style="margin:0 0 16px;color:#3f3f46;line-height:1.7;">Para entrar, usa <strong>¿Olvidaste tu contraseña?</strong> en el inicio de sesión para crear tu contraseña.</p>'
+    : '';
   const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
   const local = datosDelLocal();
 
@@ -328,6 +331,7 @@ export function buildWelcomeEmail(datos) {
               <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">
                 Tu cuenta en <strong>Pizzería La Sirena</strong> se creó exitosamente. Ya puedes ordenar tus pizzas, lasañas y bebidas favoritas.
               </p>
+              ${accesoAdmin}
             </td>
           </tr>
           <tr>
@@ -400,6 +404,7 @@ export function buildWelcomeEmail(datos) {
     '¿Cómo hacer tu pedido?',
     ...PASOS_PEDIDO.map((paso, i) => `${i + 1}. ${paso}`),
     '',
+    ...(datos?.creadoPorAdmin ? ['Para entrar, usa “¿Olvidaste tu contraseña?” en el inicio de sesión.'] : []),
     `Hacer mi primer pedido: ${frontendUrl}`,
     '',
     'Datos de nuestro local',
