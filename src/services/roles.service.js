@@ -323,9 +323,15 @@ export async function editarRol(idRol, body) {
   return transaction(async client => {
     await bloquearCambiosDeRoles(client);
     const rol = await obtenerRol(client, idRol, true);
+    if (esRolBase(rol.nombre)) {
+      throw new AppError('Este rol base no se puede editar', 403);
+    }
+    if (rol.estado) {
+      throw new AppError('Desactiva el rol antes de editarlo', 403);
+    }
     const datos = await datosRolDesdeBody(client, body);
-    if (esRolBase(rol.nombre) && !datos.activo) {
-      throw new AppError('No se puede desactivar un rol base.', 403);
+    if (datos.activo) {
+      throw new AppError('El rol debe permanecer inactivo mientras se edita. Actívalo después desde su estado.', 400);
     }
     await validarNombreUnico(client, datos.nombre, idRol);
     await validarNoQuitarPermisosAdministrador(client, rol, datos.accesos);
