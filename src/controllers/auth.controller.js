@@ -12,6 +12,7 @@ import {
 } from '../utils/loginLimiter.js';
 import { registrarIntento } from '../utils/registerLimiter.js';
 
+
 export async function iniciarSesion(req, res, next) {
   try {
     const resultado = await login(req.body.correo, req.body.contrasena);
