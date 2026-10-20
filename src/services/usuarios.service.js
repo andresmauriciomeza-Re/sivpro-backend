@@ -2,31 +2,56 @@ import AppError from '../errors/AppError.js';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import { query, transaction } from '../config/db.js';
-import { obtenerPermisos } from './auth.service.js';
 import { enviarCorreoBienvenida } from './mail.service.js';
 
-// La cuenta de super administradora no se puede eliminar desde ningún flujo
-// (misma doble condición que usa el panel: id de la semilla + correo Gloria).
-const SUPER_ADMIN_ID = '12345678';
-const SUPER_ADMIN_CORREO = 'gloria@lasirena.com';
+const superAdminId = () => String(process.env.SUPER_ADMIN_ID || '').trim();
+const esSuperAdminId = (id) => Boolean(superAdminId()) && String(id) === superAdminId();
 
 const CONSULTA_USUARIO = `
-  SELECT id_usuario, nombre, correo, estado, id_rol
-  FROM tb_usuarios
-  WHERE id_usuario = $1
+  SELECT u.id_usuario, u.nombre, u.correo, u.estado, u.id_rol, r.nombre AS rol
+  FROM tb_usuarios u
+  LEFT JOIN tb_roles r ON r.id_rol = u.id_rol
+  WHERE u.id_usuario = $1
 `;
 
-const CONSULTA_ACTIVOS = `
-  SELECT id_usuario, id_rol
-  FROM tb_usuarios
-  WHERE estado = TRUE
+const CONSULTA_ADMINISTRADORES_ACTIVOS = `
+  SELECT COUNT(DISTINCT u.id_usuario)::int AS cantidad
+  FROM tb_usuarios u
+  WHERE u.estado = TRUE AND (
+    EXISTS (
+      SELECT 1 FROM tb_roles r
+      WHERE r.id_rol = u.id_rol AND LOWER(r.nombre) = 'administrador'
+    ) OR EXISTS (
+      SELECT 1
+      FROM tb_empleado e
+      JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+      JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
+      JOIN tb_roles r ON r.id_rol = er.id_rol
+      WHERE e.id_usuario = u.id_usuario AND LOWER(r.nombre) = 'administrador'
+    )
+  )
 `;
 
-const CONSULTA_PERMISOS_ACTIVOS = `
-  SELECT modulo, nombre
-  FROM tb_permisos
-  WHERE estado = TRUE
-`;
+async function protegerUltimoAdministrador(idObjetivo) {
+  const [objetivo, activos] = await Promise.all([
+    query(`
+      SELECT EXISTS (
+        SELECT 1 FROM tb_roles r WHERE r.id_rol = u.id_rol AND LOWER(r.nombre) = 'administrador'
+      ) OR EXISTS (
+        SELECT 1 FROM tb_empleado e
+        JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+        JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
+        JOIN tb_roles r ON r.id_rol = er.id_rol
+        WHERE e.id_usuario = u.id_usuario AND LOWER(r.nombre) = 'administrador'
+      ) AS es_administrador
+      FROM tb_usuarios u WHERE u.id_usuario = $1 AND u.estado = TRUE
+    `, [String(idObjetivo)]),
+    query(CONSULTA_ADMINISTRADORES_ACTIVOS, []),
+  ]);
+  if (objetivo.rows[0]?.es_administrador && Number(activos.rows[0]?.cantidad ?? 0) <= 1) {
+    throw new AppError('No se puede desactivar o eliminar al último administrador activo.', 403);
+  }
+}
 
 const CONSULTA_ASOCIADOS = `
   SELECT
@@ -40,49 +65,10 @@ const CONSULTA_ASOCIADOS = `
       WHERE e.id_usuario = $1) AS contrataciones
 `;
 
-// Espejo de fullAccesos() del frontend (GestionConfigScreen): para cada
-// permiso activo, todas las acciones del CRUD; Dashboard solo admite "Ver";
-// el privilegio "Descargar Excel" solo existe en los 6 sub-módulos que lo
-// admiten. Con eso se replica en el backend la regla de "todos los permisos"
-// que el panel usa para proteger al último usuario total.
-const SUBS_CON_EXCEL = new Set([
-  'Compras|Orden de Compra',
-  'Compras|Compra',
-  'Producción|Productos',
-  'Producción|Orden de Producción',
-  'Producción|Producto No Conforme',
-  'Ventas|Ventas',
-]);
-const ACCIONES_CRUD = ['Ver', 'Crear', 'Editar', 'Eliminar'];
-const ACCION_EXCEL = 'Descargar Excel';
-
-function catalogoTotal(permisosActivos) {
-  const esperado = new Map();
-  for (const p of permisosActivos) {
-    const clave = `${p.modulo}|${p.nombre}`;
-    const acciones = p.modulo === 'Dashboard' ? ['Ver'] : [...ACCIONES_CRUD];
-    if (SUBS_CON_EXCEL.has(clave)) acciones.push(ACCION_EXCEL);
-    esperado.set(clave, acciones);
-  }
-  return esperado;
-}
-
-function esTotal(permisos, esperado) {
-  const delUsuario = new Map(
-    permisos.map((p) => [`${p.modulo}|${p.nombre}`, p.privilegios])
-  );
-  for (const [clave, acciones] of esperado) {
-    const mios = delUsuario.get(clave) ?? [];
-    if (!acciones.every((a) => mios.includes(a))) return false;
-  }
-  return true;
-}
-
 // Elimina la cuenta del panel (y sus fichas de cliente/empleado) o la
 // desactiva si tiene ventas o contrataciones asociadas, sin romper la
 // integridad referencial. Nunca borra al super administrador, la propia
-// cuenta del solicitante, ni deja al sistema sin un usuario ACTIVO con
-// todos los permisos.
+// cuenta del solicitante, ni deja el sistema sin un administrador activo.
 export async function eliminarUsuario(idObjetivo, idSolicitante) {
   idObjetivo = String(idObjetivo);
   if (idObjetivo === String(idSolicitante)) {
@@ -95,39 +81,11 @@ export async function eliminarUsuario(idObjetivo, idSolicitante) {
     throw new AppError('Usuario no encontrado.', 404);
   }
 
-  const correo = (objetivo.correo ?? '').toLowerCase();
-  if (idObjetivo === SUPER_ADMIN_ID || correo === SUPER_ADMIN_CORREO) {
+  if (esSuperAdminId(idObjetivo)) {
     throw new AppError('La cuenta de super administrador no se puede eliminar.', 403);
   }
 
-  // La regla del último total aplica solo si el objetivo está activo (si ya
-  // estaba inactivo, eliminarlo o desactivarlo no cambia el conjunto de
-  // usuarios activos con todos los permisos).
-  if (objetivo.estado) {
-    const [permisosActivos, activos] = await Promise.all([
-      query(CONSULTA_PERMISOS_ACTIVOS, []),
-      query(CONSULTA_ACTIVOS, []),
-    ]);
-    const esperado = catalogoTotal(permisosActivos.rows);
-    const mios = await obtenerPermisos(objetivo.id_rol, idObjetivo);
-    if (esTotal(mios, esperado)) {
-      let hayOtroTotal = false;
-      for (const activo of activos.rows) {
-        if (activo.id_usuario === idObjetivo) continue;
-        const permisos = await obtenerPermisos(activo.id_rol, activo.id_usuario);
-        if (esTotal(permisos, esperado)) {
-          hayOtroTotal = true;
-          break;
-        }
-      }
-      if (!hayOtroTotal) {
-        throw new AppError(
-          'No se puede: el sistema debe tener al menos un usuario activo con todos los permisos.',
-          409
-        );
-      }
-    }
-  }
+  if (objetivo.estado) await protegerUltimoAdministrador(idObjetivo);
 
   const { rows: asociados } = await query(CONSULTA_ASOCIADOS, [idObjetivo]);
   const ventas = Number(asociados[0].ventas);
@@ -177,13 +135,24 @@ export async function eliminarUsuario(idObjetivo, idSolicitante) {
 export async function listarUsuarios() {
   const { rows } = await query(`
     SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo,
-           u.telefono, u.estado, u.id_rol, r.nombre AS rol,
+           u.telefono, u.estado, u.id_rol, COALESCE(r.nombre, 'Sin rol') AS rol,
            r.estado AS rol_estado,
-           EXISTS (SELECT 1 FROM tb_empleado e WHERE e.id_usuario = u.id_usuario) AS es_empleado
+           EXISTS (SELECT 1 FROM tb_cliente c WHERE c.id_usuario = u.id_usuario) AS "esCliente",
+           EXISTS (SELECT 1 FROM tb_empleado e WHERE e.id_usuario = u.id_usuario) AS "esEmpleado",
+           COALESCE((
+             SELECT array_agg(DISTINCT rx.nombre ORDER BY rx.nombre)
+             FROM tb_empleado e
+             JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+             JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
+             JOIN tb_roles rx ON rx.id_rol = er.id_rol
+             WHERE e.id_usuario = u.id_usuario
+           ), ARRAY[]::text[]) AS "rolesExtra",
+           (NULLIF(BTRIM($1), '') IS NOT NULL
+             AND u.id_usuario::text = BTRIM($1)) AS "esSuperAdmin"
     FROM tb_usuarios u
-    JOIN tb_roles r ON r.id_rol = u.id_rol
+    LEFT JOIN tb_roles r ON r.id_rol = u.id_rol
     ORDER BY u.nombre, u.id_usuario
-  `, []);
+  `, [superAdminId()]);
   return rows;
 }
 
@@ -272,6 +241,22 @@ export async function editarCliente(id, datos) {
   return { mensaje: 'Cliente actualizado correctamente.' };
 }
 
+export async function cambiarEstadoUsuario(id, estado, idSolicitante) {
+  const idObjetivo = String(id);
+  if (estado === false && idObjetivo === String(idSolicitante)) {
+    throw new AppError('No puedes desactivar tu propia cuenta.', 403);
+  }
+  const { rows } = await query(CONSULTA_USUARIO, [idObjetivo]);
+  const objetivo = rows[0];
+  if (!objetivo) throw new AppError('Usuario no encontrado.', 404);
+  if (estado === false && esSuperAdminId(idObjetivo)) {
+    throw new AppError('No se puede desactivar al super administrador.', 403);
+  }
+  if (estado === false && objetivo.estado) await protegerUltimoAdministrador(idObjetivo);
+  await query('UPDATE tb_usuarios SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
+  return { mensaje: 'Estado del usuario actualizado correctamente.' };
+}
+
 export async function cambiarEstadoCliente(id, estado, idSolicitante) {
   const idObjetivo = String(id);
   if (estado === false && idObjetivo === String(idSolicitante)) {
@@ -283,7 +268,7 @@ export async function cambiarEstadoCliente(id, estado, idSolicitante) {
     [idObjetivo]
   );
   if (!rows[0]) throw new AppError('Cliente no encontrado.', 404);
-  if (estado === false && (idObjetivo === SUPER_ADMIN_ID || String(rows[0].correo).toLowerCase() === SUPER_ADMIN_CORREO)) {
+  if (estado === false && esSuperAdminId(idObjetivo)) {
     throw new AppError('No se puede desactivar la cuenta de Gloria.', 403);
   }
   await transaction(async (client) => {

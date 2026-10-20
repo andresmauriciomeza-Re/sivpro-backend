@@ -6,6 +6,7 @@ import { validarAltaCliente, validarEdicionCliente } from '../validators/auth.va
 import {
   borrarUsuario,
   cambiarEstadoClienteControlador,
+  cambiarEstadoUsuarioControlador,
   crearClienteControlador,
   editarClienteControlador,
   obtenerClientePorDocumento,
@@ -14,6 +15,14 @@ import {
 } from '../controllers/usuarios.controller.js';
 
 const router = Router();
+
+router.patch('/usuarios/:id/estado', verificarToken, requierePermiso({
+  modulo: 'Configuración', nombre: 'Usuarios', privilegio: 'Editar',
+  mensaje: 'No tienes permiso para editar usuarios.',
+}), (req, res, next) => {
+  if (typeof req.body?.estado !== 'boolean') return next(new AppError('El estado debe ser activo o inactivo.', 400));
+  next();
+}, cambiarEstadoUsuarioControlador);
 
 router.post('/clientes', verificarToken, requierePermiso({ modulo: 'Ventas', nombre: 'Clientes', privilegio: 'Crear', mensaje: 'No tienes permiso para crear clientes.' }), validarAltaCliente, crearClienteControlador);
 router.put('/clientes/:id', verificarToken, requierePermiso({ modulo: 'Ventas', nombre: 'Clientes', privilegio: 'Editar', mensaje: 'No tienes permiso para editar clientes.' }), validarEdicionCliente, editarClienteControlador);

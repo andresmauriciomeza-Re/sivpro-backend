@@ -3,6 +3,10 @@ import app from './app.js';
 import { verificarCloudinary } from './config/cloudinary.js';
 import { verificarCorreo } from './services/mail.service.js';
 
+if (!String(process.env.SUPER_ADMIN_ID || '').trim()) {
+  console.warn('SUPER_ADMIN_ID no está configurado; no se marcará ningún usuario como super administrador.');
+}
+
 if (!process.env.JWT_SECRET) {
   console.error(
     'Falta JWT_SECRET. Configure la variable de entorno JWT_SECRET para arrancar el servidor.'
