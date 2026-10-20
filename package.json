@@ -6,7 +6,8 @@
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "typecheck": "node --check src/app.js && node --check src/services/auth.service.js && node --check src/services/roles.service.js && node --check src/controllers/roles.controller.js && node --check src/routes/roles.routes.js"
   },
   "engines": {
     "node": ">=18"

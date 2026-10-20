@@ -83,7 +83,45 @@ export async function obtenerPermisos(idRol, idUsuario) {
   return [...permisos.values()];
 }
 
-function armarUsuario(datos, permisos) {
+export async function obtenerPermisosDeRol(idRol) {
+  const { rows } = await consultar(PERMISOS_ROL_BASE, [idRol]);
+  const permisos = new Map();
+  for (const fila of rows) {
+    const clave = `${fila.modulo}|${fila.permiso}`;
+    if (!permisos.has(clave)) {
+      permisos.set(clave, { modulo: fila.modulo, nombre: fila.permiso, privilegios: [] });
+    }
+    const permiso = permisos.get(clave);
+    if (!permiso.privilegios.includes(fila.privilegio)) permiso.privilegios.push(fila.privilegio);
+  }
+  return [...permisos.values()];
+}
+
+async function obtenerRolesAsignados(idRol, idUsuario) {
+  const { rows: extras } = await consultar(`
+    SELECT DISTINCT r.id_rol, r.nombre
+    FROM tb_empleado e
+    JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+    JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
+    JOIN tb_roles r ON r.id_rol = er.id_rol AND r.estado = TRUE
+    WHERE e.id_usuario = $1 AND e.estado = TRUE
+    ORDER BY r.id_rol
+  `, [idUsuario]);
+  const { rows: principal } = await consultar(
+    'SELECT id_rol, nombre FROM tb_roles WHERE id_rol = $1 AND estado = TRUE',
+    [idRol],
+  );
+  const roles = new Map();
+  if (principal[0]) roles.set(String(principal[0].id_rol), principal[0]);
+  for (const rol of extras) roles.set(String(rol.id_rol), rol);
+  return Promise.all([...roles.values()].map(async rol => ({
+    id: rol.id_rol,
+    nombre: rol.nombre,
+    permisos: await obtenerPermisosDeRol(rol.id_rol),
+  })));
+}
+
+function armarUsuario(datos, permisos, roles) {
   const superAdminId = String(process.env.SUPER_ADMIN_ID || '').trim();
   return {
     id: datos.id_usuario,
@@ -96,6 +134,7 @@ function armarUsuario(datos, permisos) {
     rol: datos.rol,
     esSuperAdmin: Boolean(superAdminId) && String(datos.id_usuario) === superAdminId,
     permisos,
+    roles,
   };
 }
 
@@ -119,6 +158,7 @@ export async function login(correo, contrasena) {
   }
 
   const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
+  const roles = await obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario);
 
   const token = jwt.sign(
     { sub: usuario.id_usuario, rol: usuario.rol },
@@ -131,7 +171,7 @@ export async function login(correo, contrasena) {
 
   return {
     token,
-    usuario: armarUsuario(usuario, permisos),
+    usuario: await armarUsuario(usuario, permisos, roles),
   };
 }
 
@@ -144,7 +184,8 @@ export async function obtenerUsuarioPorId(idUsuario) {
   }
 
   const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
-  return armarUsuario(usuario, permisos);
+  const roles = await obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario);
+  return armarUsuario(usuario, permisos, roles);
 }
 
 const CONSULTA_CORREO_DE_OTRO = `
