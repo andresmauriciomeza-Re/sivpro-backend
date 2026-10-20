@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import {
   buscarClientePorDocumento,
   cambiarEstadoCliente,
+  cambiarEstadoUsuario,
   crearCliente,
   editarCliente,
   eliminarUsuario,
@@ -24,6 +25,12 @@ export async function editarClienteControlador(req, res, next) {
 export async function cambiarEstadoClienteControlador(req, res, next) {
   try {
     res.status(200).json(await cambiarEstadoCliente(req.params.id, req.body.estado, req.usuario.id));
+  } catch (error) { next(error); }
+}
+
+export async function cambiarEstadoUsuarioControlador(req, res, next) {
+  try {
+    res.status(200).json(await cambiarEstadoUsuario(req.params.id, req.body.estado, req.usuario.id));
   } catch (error) { next(error); }
 }
 

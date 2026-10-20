@@ -84,6 +84,7 @@ export async function obtenerPermisos(idRol, idUsuario) {
 }
 
 function armarUsuario(datos, permisos) {
+  const superAdminId = String(process.env.SUPER_ADMIN_ID || '').trim();
   return {
     id: datos.id_usuario,
     nombre: datos.nombre,
@@ -93,6 +94,7 @@ function armarUsuario(datos, permisos) {
     tipoDocumento: datos.tipo_documento ?? '',
     telefono: datos.telefono ?? '',
     rol: datos.rol,
+    esSuperAdmin: Boolean(superAdminId) && String(datos.id_usuario) === superAdminId,
     permisos,
   };
 }
