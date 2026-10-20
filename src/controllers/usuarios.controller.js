@@ -52,10 +52,7 @@ export async function obtenerClientes(req, res, next) {
 
 export async function obtenerClientePorDocumento(req, res, next) {
   try {
-    const cliente = await buscarClientePorDocumento(
-      req.params.numero,
-      typeof req.query.tipoDocumento === 'string' ? req.query.tipoDocumento : null
-    );
+    const cliente = await buscarClientePorDocumento(req.params.numero);
     if (!cliente) {
       throw new AppError('No se encontró un cliente con ese documento.', 404);
     }

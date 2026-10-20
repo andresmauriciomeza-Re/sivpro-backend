@@ -6,6 +6,13 @@ import { enviarCorreoBienvenida } from './mail.service.js';
 
 const superAdminId = () => String(process.env.SUPER_ADMIN_ID || '').trim();
 const esSuperAdminId = (id) => Boolean(superAdminId()) && String(id) === superAdminId();
+const normalizarNombre = (valor) => {
+  const minusculas = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'e']);
+  return String(valor ?? '').trim().toLocaleLowerCase('es').split(/\s+/).filter(Boolean)
+    .map((palabra, indice) => indice > 0 && minusculas.has(palabra)
+      ? palabra
+      : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
+};
 
 const CONSULTA_USUARIO = `
   SELECT u.id_usuario, u.nombre, u.correo, u.estado, u.id_rol, r.nombre AS rol
@@ -179,9 +186,8 @@ export async function buscarClientePorDocumento(numero, tipoDocumento) {
            estado
     FROM tb_usuarios
     WHERE id_usuario = $1
-      AND ($2::text IS NULL OR tipo_documento = $2)
     LIMIT 1
-  `, [String(numero), tipoDocumento || null]);
+  `, [String(numero)]);
   return rows[0] ?? null;
 }
 
@@ -208,7 +214,7 @@ export async function crearCliente(datos) {
       await client.query(
         `INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, telefono, id_rol, estado)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [datos.numeroDocumento, datos.tipoDocumento, datos.nombre, datos.correo, hash, datos.telefono, roles[0].id_rol, datos.estado !== false]
+        [datos.numeroDocumento, datos.tipoDocumento, normalizarNombre(datos.nombre), datos.correo, hash, datos.telefono, roles[0].id_rol, datos.estado !== false]
       );
       await client.query('INSERT INTO tb_cliente (id_usuario, estado) VALUES ($1, $2)', [datos.numeroDocumento, datos.estado !== false]);
     });
@@ -229,7 +235,7 @@ export async function editarCliente(id, datos) {
     const { rowCount } = await query(
       `UPDATE tb_usuarios u SET nombre = $1, correo = $2, telefono = $3
        WHERE u.id_usuario = $4 AND EXISTS (SELECT 1 FROM tb_cliente c WHERE c.id_usuario = u.id_usuario)`,
-      [datos.nombre, datos.correo, datos.telefono, String(id)]
+      [normalizarNombre(datos.nombre), datos.correo, datos.telefono, String(id)]
     );
     if (!rowCount) throw new AppError('Cliente no encontrado.', 404);
   } catch (error) {

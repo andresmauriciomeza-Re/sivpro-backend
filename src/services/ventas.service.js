@@ -1,4 +1,10 @@
 import AppError from '../errors/AppError.js';
+
+const normalizarNombre = (valor) => {
+  const excepciones = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'e']);
+  return String(valor ?? '').trim().toLocaleLowerCase('es').split(/\s+/).filter(Boolean)
+    .map((palabra, indice) => indice > 0 && excepciones.has(palabra) ? palabra : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
+};
 import { query, transaction } from '../config/db.js';
 import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, puedeTransicionarVenta } from '../config/ventas.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
@@ -114,7 +120,7 @@ async function resolverOCrearClientePanel(client, datos) {
   await client.query(
     `INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, id_rol)
      VALUES ($1, $2, $3, NULL, NULL, $4)`,
-    [datos.numeroDocumento, datos.tipoDocumento, datos.nombre, rolRows[0].id_rol]
+     [datos.numeroDocumento, datos.tipoDocumento, normalizarNombre(datos.nombre), rolRows[0].id_rol]
   );
   const cliente = await client.query(
     'INSERT INTO tb_cliente (id_usuario) VALUES ($1) RETURNING id_cliente',

@@ -9,6 +9,11 @@ const DOCUMENTO_DUPLICADO = 'Este documento ya está registrado.';
 const CORREO_DUPLICADO = 'Este correo ya está registrado.';
 const REGISTRO_DUPLICADO = 'Este registro ya existe.';
 const ERROR_INTERNO = 'Error interno del servidor.';
+const normalizarNombre = (valor) => {
+  const lower = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'e']);
+  return String(valor ?? '').trim().toLocaleLowerCase('es').split(/\s+/).filter(Boolean)
+    .map((p, i) => i && lower.has(p) ? p : p.charAt(0).toLocaleUpperCase('es') + p.slice(1)).join(' ');
+};
 
 const CONSULTA_LOGIN = `
   SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo, u.telefono,
@@ -225,6 +230,7 @@ const CONSULTA_CORREO_EXISTE = `
   SELECT 1 FROM tb_usuarios WHERE LOWER(correo) = LOWER($1)
 `;
 
+
 const CONSULTA_ROL_CLIENTE = `
   SELECT id_rol FROM tb_roles WHERE nombre = 'Cliente'
 `;
@@ -292,7 +298,7 @@ export async function registrarCliente(datos) {
       await client.query(INSERT_USUARIO, [
         numeroDocumento,
         tipoDocumento,
-        nombre,
+        normalizarNombre(nombre),
         correo,
         hash,
         telefono,
@@ -307,7 +313,7 @@ export async function registrarCliente(datos) {
   return {
     usuario: {
       id: numeroDocumento,
-      nombre,
+      nombre: normalizarNombre(nombre),
       correo,
       rol: 'Cliente',
     },
