@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "typecheck": "node --check src/app.js && node --check src/services/auth.service.js && node --check src/services/roles.service.js && node --check src/controllers/roles.controller.js && node --check src/routes/roles.routes.js"
+    "typecheck": "node --input-type=module -e \"import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process'; const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : (e.name.endsWith('.js') ? [path.join(d, e.name)] : [])); const files = walk('src'); files.forEach((f) => execFileSync(process.execPath, ['--check', f], { stdio: 'inherit' })); console.log('Typecheck OK: ' + files.length + ' archivos revisados.');\""
   },
   "engines": {
     "node": ">=18"

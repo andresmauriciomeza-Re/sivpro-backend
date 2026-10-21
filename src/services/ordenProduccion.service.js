@@ -15,7 +15,9 @@ export async function crearOrdenProduccion(client, idVenta) {
   if (existentes[0]) return Number(existentes[0].id_orden_produccion);
 
   const { rows: ventas } = await client.query(
-    `SELECT id_venta, fecha::date AS fecha_solicitada, hora_recogida
+    `SELECT id_venta,
+            (fecha::date + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END)::date AS fecha_solicitada,
+            hora_recogida
        FROM tb_venta WHERE id_venta = $1`,
     [idVenta]
   );

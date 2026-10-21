@@ -652,8 +652,8 @@ export async function avanzarVentasCompletadas() {
     `UPDATE tb_venta
         SET estado = $1, fecha_estado = now() AT TIME ZONE $2
       WHERE estado = $3
-        AND v.hora_recogida IS NOT NULL
-        AND (v.fecha::date + v.hora_recogida) <= now() AT TIME ZONE $2`,
+        AND hora_recogida IS NOT NULL
+        AND (fecha::date + hora_recogida + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END) <= now() AT TIME ZONE $2`,
     [ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA.POR_ENTREGAR]
   );
   return rowCount;
