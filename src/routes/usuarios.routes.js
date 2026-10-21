@@ -5,6 +5,7 @@ import { requierePermiso } from '../middlewares/permisos.js';
 import { validarAltaCliente, validarEdicionCliente } from '../validators/auth.validator.js';
 import {
   borrarUsuario,
+  buscarClientesPorNombreControlador,
   cambiarEstadoClienteControlador,
   cambiarEstadoUsuarioControlador,
   crearClienteControlador,
@@ -53,6 +54,18 @@ router.get(
     mensaje: 'No tienes permiso para ver clientes.',
   }),
   obtenerClientes
+);
+
+router.get(
+  '/clientes/buscar',
+  verificarToken,
+  requierePermiso({
+    modulo: 'Ventas',
+    nombre: 'Ventas',
+    privilegio: 'Crear',
+    mensaje: 'No tienes permiso para crear ventas.',
+  }),
+  buscarClientesPorNombreControlador
 );
 
 router.get(

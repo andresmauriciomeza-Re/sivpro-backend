@@ -1,6 +1,7 @@
 import AppError from '../errors/AppError.js';
 import {
   buscarClientePorDocumento,
+  buscarClientesPorNombre,
   cambiarEstadoCliente,
   cambiarEstadoUsuario,
   crearCliente,
@@ -60,6 +61,12 @@ export async function obtenerClientePorDocumento(req, res, next) {
   } catch (error) {
     next(error);
   }
+}
+
+export async function buscarClientesPorNombreControlador(req, res, next) {
+  try {
+    res.status(200).json(await buscarClientesPorNombre(req.query.q));
+  } catch (error) { next(error); }
 }
 
 export async function borrarUsuario(req, res, next) {

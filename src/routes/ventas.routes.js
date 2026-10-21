@@ -4,6 +4,7 @@ import { requierePermiso } from '../middlewares/permisos.js';
 import {
   crearVentaClienteController,
   crearVentaPanelController,
+  entregarVentaController,
   listarMisVentasController,
   listarVentasController,
   obtenerVentaController,
@@ -25,6 +26,7 @@ router.post('/ventas/panel', verificarToken, permisoVentas('Crear'), crearVentaP
 router.get('/ventas', verificarToken, permisoVentas('Ver'), listarVentasController);
 router.get('/ventas/:id', verificarToken, permisoVentas('Ver'), obtenerVentaController);
 router.patch('/ventas/:id/verificacion', verificarToken, permisoVentas('Editar'), verificarVentaController);
+router.patch('/ventas/:id/entrega', verificarToken, permisoVentas('Editar'), entregarVentaController);
 router.post('/ventas/:id/comprobantes', verificarToken, subirComprobanteController);
 
 export default router;
