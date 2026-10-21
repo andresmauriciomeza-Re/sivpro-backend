@@ -191,6 +191,26 @@ export async function buscarClientePorDocumento(numero, tipoDocumento) {
   return rows[0] ?? null;
 }
 
+export async function buscarClientesPorNombre(termino) {
+  const nombre = String(termino ?? '').trim();
+  if ([...nombre].length < 3) return [];
+  const { rows } = await query(`
+    SELECT u.id_usuario AS documento,
+           u.tipo_documento AS "tipoDocumento",
+           u.nombre,
+           (COALESCE(c.estado, FALSE) AND COALESCE(u.estado, FALSE)) AS estado
+      FROM tb_cliente c
+      JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
+     WHERE strpos(
+       translate(lower(u.nombre), 'áéíóúüñ', 'aeiouun'),
+       translate(lower($1), 'áéíóúüñ', 'aeiouun')
+     ) > 0
+     ORDER BY u.nombre ASC
+     LIMIT 8
+  `, [nombre]);
+  return rows;
+}
+
 function mapearErrorCliente(error) {
   if (error.code === '23505') {
     if (error.constraint === 'tb_usuarios_correo_key') return new AppError('Este correo ya está registrado.', 409);

@@ -277,6 +277,36 @@ export async function verificarVenta(idVenta, datos) {
   } catch (error) { throw mapearError(error); }
 }
 
+/** Entrega manual de una venta: "Por entregar" → "Completado".
+    La fila se bloquea con FOR UPDATE para que dos entregas simultáneas
+    no apliquen dos veces la transición, y el estado se valida contra la
+    tabla de transiciones compartida con el frontend. */
+export async function entregarVenta(idVenta) {
+  try {
+    return await transaction(async (client) => {
+      const { rows } = await client.query(
+        `SELECT v.id_venta, v.estado
+           FROM tb_venta v
+          WHERE v.id_venta = $1
+          FOR UPDATE OF v`,
+        [idVenta]
+      );
+      const venta = rows[0];
+      if (!venta) throw new AppError('Venta no encontrada.', 404);
+      if (!puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.COMPLETADO)) {
+        throw new AppError(`Transición no permitida: ${venta.estado} → ${ESTADOS_VENTA.COMPLETADO}.`, 409);
+      }
+      const { rows: actualizada } = await client.query(
+        `UPDATE tb_venta SET estado = $1, fecha_estado = $2
+          WHERE id_venta = $3
+          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado`,
+        [ESTADOS_VENTA.COMPLETADO, fechaHoraBogota().timestamp, idVenta]
+      );
+      return actualizada[0];
+    });
+  } catch (error) { throw mapearError(error); }
+}
+
 export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
   try {
     return await transaction(async (client) => {

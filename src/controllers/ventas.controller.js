@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import {
   crearVentaCliente,
   crearVentaPanel,
+  entregarVenta,
   listarVentas,
   subirComprobanteCliente,
   verificarVenta,
@@ -59,6 +60,13 @@ export async function obtenerVentaController(req, res, next) {
 export async function verificarVentaController(req, res, next) {
   try {
     const resultado = await verificarVenta(idNumerico(req.params.id), validarVerificacion(req.body));
+    res.json(resultado);
+  } catch (error) { next(error); }
+}
+
+export async function entregarVentaController(req, res, next) {
+  try {
+    const resultado = await entregarVenta(idNumerico(req.params.id));
     res.json(resultado);
   } catch (error) { next(error); }
 }
