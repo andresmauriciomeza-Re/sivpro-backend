@@ -9,7 +9,7 @@ import { query, transaction } from '../config/db.js';
 import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
-import { validarMotivoRechazo, validarMotivoAnulacion } from '../validators/ventas.validator.js';
+import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
 
 /** Marca quién deja la venta en estado Anulado. El rechazo de la verificación
     lo hace siempre el panel; la anulación del panel usa 'Administrador' y la
@@ -169,6 +169,7 @@ function mapearError(error) {
     return new AppError('Los datos de la venta no cumplen las reglas de la base de datos.', 400);
   }
   console.error('Error de base de datos en ventas:', error?.code, error?.constraint);
+  console.error(error);
   return new AppError('No se pudo completar la operación de ventas.', 503);
 }
 
@@ -456,11 +457,13 @@ export async function marcarDevolucion(idVenta) {
       );
       let idDevolucion = existente[0] ? Number(existente[0].id_devolucion) : null;
       if (!idDevolucion) {
+        // Fecha explícita en hora de Bogotá (igual que tb_venta.fecha): el
+        // DEFAULT now() de la BD guardaría UTC en Neon y descuadraría el día.
         const { rows: creada } = await client.query(
-          `INSERT INTO tb_devolucion (id_venta, tipo, monto, nota, estado)
-           VALUES ($1, 'Devuelta', 0, NULL, 'Pendiente')
+          `INSERT INTO tb_devolucion (id_venta, fecha, tipo, monto, nota, estado)
+           VALUES ($1, $2, 'Devuelta', 0, NULL, 'Pendiente')
            RETURNING id_devolucion`,
-          [idVenta]
+          [idVenta, fechaHoraBogota().timestamp]
         );
         idDevolucion = Number(creada[0].id_devolucion);
       }
@@ -504,6 +507,23 @@ export async function resolverDevolucion(idDevolucion, datos) {
 
       const entrada = validarResolverDevolucion(datos);
       const { tipo, nota, lineas, canje, monto } = entrada;
+
+      // El producto de reemplazo debe existir y estar Disponible ANTES de
+      // insertar el detalle: si no, la FK de id_producto_reemplazo revienta
+      // con un 23503 genérico en vez de un mensaje claro.
+      const idsReemplazo = [...new Set(
+        lineas.map((linea) => linea.idProductoReemplazo).filter((id) => id != null),
+      )];
+      if (idsReemplazo.length > 0) {
+        const { rows: reemplazos } = await client.query(
+          `SELECT id_producto FROM tb_productos
+            WHERE id_producto = ANY($1::integer[]) AND estado = 'Disponible'`,
+          [idsReemplazo],
+        );
+        if (reemplazos.length !== idsReemplazo.length) {
+          throw new AppError('El producto de reemplazo no existe o no está disponible.', 400);
+        }
+      }
 
       // ── 1. Detalle de lo devuelto, por línea de la venta original ──
       for (const linea of lineas) {
@@ -672,7 +692,8 @@ export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
             v.estado, v.fecha_estado, v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
-            d.id_devolucion, d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
+            d.id_devolucion, d.fecha AS devolucion_fecha,
+            d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
             d.monto AS devolucion_monto, d.nota AS devolucion_nota,
             d.id_venta_reemplazo,
             GREATEST(0, ${SEGUNDOS_ANULACION}
