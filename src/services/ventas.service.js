@@ -261,7 +261,7 @@ export async function verificarVenta(idVenta, datos) {
         if (pagado >= total) throw new AppError('El monto pagado debe ser menor al total; acepta la venta si está completo.', 400);
         const faltante = total - pagado;
         const { rows: pagos } = await client.query(
-          `SELECT id_pago, depositado FROM tb_pagos WHERE id_venta = $1 ORDER BY id_pago DESC FOR UPDATE`,
+          `SELECT id_pago, depositado, tipo FROM tb_pagos WHERE id_venta = $1 ORDER BY id_pago DESC FOR UPDATE`,
           [idVenta]
         );
         if (!pagos.length) throw new AppError('La venta no tiene pagos registrados.', 409);
@@ -282,6 +282,9 @@ export async function verificarVenta(idVenta, datos) {
           total,
           pagado,
           faltante,
+          // Medio con el que pagó el cliente: el QR del correo codifica esa
+          // misma cuenta (fallback Nequi si no quedó registrado).
+          tipo: pagos[0].tipo,
         };
       } else {
         // Rechazo: motivo obligatorio (lista válida o "Otro: <texto>"), pagos

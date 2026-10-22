@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import QRCode from 'qrcode';
 import {
   buildPasswordChangedEmail,
   buildResetEmail,
@@ -10,6 +11,21 @@ let transporte = null;
 
 function hayCredenciales() {
   return Boolean(process.env.MAIL_USER && (process.env.MAIL_PASS || process.env.MAIL_APP_PASSWORD));
+}
+
+/** Bases del QR de pago por medio: DEBEN coincidir con PAYMENT_INFO de
+    shared/components/PasoPagoTransferencia.tsx (frontend). Al cambiar una,
+    cambiar la otra: el QR del correo y el del checkout codifican lo mismo. */
+const QR_BASES_PAGO = {
+  Nequi: 'nequi://pay/3105551234?name=La%20Sirena%20Pizza',
+  Bancolombia: 'https://banco.example.com/pagar?cuenta=690123456789&titular=La%20Sirena%20Pizza%20SAS',
+};
+
+/** Payload que codifica el QR: base del medio + valor=<monto>. Si la base ya
+    trae "?" se concatena con "&"; si no, con "?" (igual que el frontend). */
+function payloadQrPago(tipo, monto) {
+  const base = QR_BASES_PAGO[tipo] ?? QR_BASES_PAGO.Nequi;
+  return `${base}${base.includes('?') ? '&' : '?'}valor=${monto}`;
 }
 
 function obtenerTransporte() {
@@ -127,13 +143,31 @@ export async function enviarAvisoCambioContrasena(datos) {
 
 export async function enviarAvisoMontoFaltante(datos) {
   const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
-  if (!correo) return;
+  if (!correo) {
+    console.error(`Aviso de monto faltante omitido: la venta ${datos?.id ?? '?'} no tiene correo de destino`);
+    return;
+  }
   if (!hayCredenciales()) {
     console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de saldo omitido');
     return;
   }
   try {
-    const mail = buildMontoFaltanteEmail(datos);
+    // QR con los MISMOS datos que codifica el checkout (base del medio de pago
+    // + valor=<faltante>). Si la generación falla, el correo sale igual sin QR.
+    let qrBuffer = null;
+    try {
+      qrBuffer = await QRCode.toBuffer(payloadQrPago(datos?.tipo, Number(datos?.faltante) || 0), {
+        type: 'png',
+        margin: 1,
+        width: 260,
+        color: { dark: '#141414', light: '#ffffff' },
+      });
+    } catch (error) {
+      console.error(
+        `No se pudo generar el QR del aviso de saldo de la venta ${datos?.id ?? '?'}: ${error?.message || error}`
+      );
+    }
+    const mail = buildMontoFaltanteEmail({ ...datos, qrBuffer });
     await obtenerTransporte().sendMail({
       from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
       replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
@@ -143,6 +177,7 @@ export async function enviarAvisoMontoFaltante(datos) {
       html: mail.html,
       attachments: mail.attachments,
     });
+    console.log(`Aviso de monto faltante enviado a ${correo}`);
   } catch (error) {
     console.error(`No se pudo enviar aviso de saldo pendiente a ${correo}: ${error?.code || error?.message || error}`);
   }
