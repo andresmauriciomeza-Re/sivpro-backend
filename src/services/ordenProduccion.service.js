@@ -15,7 +15,9 @@ export async function crearOrdenProduccion(client, idVenta) {
   if (existentes[0]) return Number(existentes[0].id_orden_produccion);
 
   const { rows: ventas } = await client.query(
-    `SELECT id_venta, fecha::date AS fecha_solicitada, hora_recogida
+    `SELECT id_venta,
+            (fecha::date + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END)::date AS fecha_solicitada,
+            hora_recogida
        FROM tb_venta WHERE id_venta = $1`,
     [idVenta]
   );
@@ -61,4 +63,52 @@ export async function crearOrdenProduccion(client, idVenta) {
     }
   }
   return Number(idOrden);
+}
+
+/**
+ * Cancela la orden "Pedido" de una venta (anulación del panel o cancelación
+ * del cliente) y devuelve al stock las BEBIDAS (tipo Reventa) que esa orden
+ * descontó al crearse en `crearOrdenProduccion`: los elaborados no vuelven,
+ * porque nunca existieron como existencia.
+ *
+ * Recibe el cliente transaccional del llamador. Si la venta no tenía orden, o
+ * su orden ya estaba cancelada, no hace nada (idempotente) y devuelve el id o
+ * `null`. El UPDATE respeta `ck_op_fechas`: al pasar a 'Cancelada' se escribe
+ * `fecha_cancelada` en el MISMO statement.
+ */
+export async function cancelarOrdenProduccionDeVenta(client, idVenta) {
+  const { rows } = await client.query(
+    `SELECT id_orden_produccion, estado FROM tb_orden_produccion
+      WHERE id_venta = $1 AND tipo = 'Pedido'
+      ORDER BY id_orden_produccion LIMIT 1 FOR UPDATE`,
+    [idVenta]
+  );
+  const orden = rows[0];
+  if (!orden) return null;
+  if (orden.estado === 'Cancelada') return Number(orden.id_orden_produccion);
+
+  const { rows: bebidas } = await client.query(
+    `SELECT dv.id_producto, dv.cantidad
+       FROM tb_detalle_venta dv
+       JOIN tb_productos p ON p.id_producto = dv.id_producto
+      WHERE dv.id_venta = $1 AND p.tipo = 'Reventa'
+      ORDER BY dv.id_detalle_venta
+      FOR UPDATE OF p`,
+    [idVenta]
+  );
+  for (const bebida of bebidas) {
+    await client.query(
+      `UPDATE tb_productos SET stock = stock + $1
+        WHERE id_producto = $2 AND tipo = 'Reventa'`,
+      [bebida.cantidad, bebida.id_producto]
+    );
+  }
+
+  await client.query(
+    `UPDATE tb_orden_produccion
+        SET estado = 'Cancelada', fecha_cancelada = now() AT TIME ZONE 'America/Bogota'
+      WHERE id_orden_produccion = $1`,
+    [orden.id_orden_produccion]
+  );
+  return Number(orden.id_orden_produccion);
 }

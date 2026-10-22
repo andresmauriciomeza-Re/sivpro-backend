@@ -1,13 +1,17 @@
 import AppError from '../errors/AppError.js';
 import {
+  anularVenta,
+  cancelarVentaCliente,
   crearVentaCliente,
   crearVentaPanel,
-  entregarVenta,
   listarVentas,
+  marcarDevolucion,
+  resolverDevolucion,
   subirComprobanteCliente,
   verificarVenta,
 } from '../services/ventas.service.js';
 import {
+  validarAnulacion,
   validarClientePanel,
   validarComprobante,
   validarCrearVenta,
@@ -64,9 +68,38 @@ export async function verificarVentaController(req, res, next) {
   } catch (error) { next(error); }
 }
 
-export async function entregarVentaController(req, res, next) {
+export async function anularVentaController(req, res, next) {
   try {
-    const resultado = await entregarVenta(idNumerico(req.params.id));
+    const resultado = await anularVenta(idNumerico(req.params.id), validarAnulacion(req.body));
+    res.json(resultado);
+  } catch (error) { next(error); }
+}
+
+/** Cancelación del propio cliente (sólo verificarToken, sin permiso de panel):
+    la venta debe pertenecerle y estar dentro de los primeros 10 minutos. */
+export async function cancelarVentaClienteController(req, res, next) {
+  try {
+    const resultado = await cancelarVentaCliente(idNumerico(req.params.id), req.usuario.id);
+    res.json(resultado);
+  } catch (error) { next(error); }
+}
+
+/** Marca una venta como devolución (Completado → Devolucion) y abre la fila
+    pendiente en tb_devolucion. El detalle y la venta de canje se registran al
+    confirmar, en el resolver. */
+export async function marcarDevolucionController(req, res, next) {
+  try {
+    const resultado = await marcarDevolucion(idNumerico(req.params.id));
+    res.json(resultado);
+  } catch (error) { next(error); }
+}
+
+/** Resuelve la devolución: registra lo devuelto por línea y, si hay canje,
+    crea la nueva venta del cliente + su orden de producción. El cuerpo se
+    valida dentro del servicio (necesita la estructura ya parseada). */
+export async function resolverDevolucionController(req, res, next) {
+  try {
+    const resultado = await resolverDevolucion(idNumerico(req.params.id), req.body);
     res.json(resultado);
   } catch (error) { next(error); }
 }
