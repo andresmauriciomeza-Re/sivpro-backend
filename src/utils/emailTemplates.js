@@ -178,7 +178,7 @@ function urlDelFrontend() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
 }
 
-export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante }) {
+export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante, qrBuffer }) {
   const nombreCompleto = String(nombre || '').trim() || 'cliente';
   const nombreSeguro = escaparHtml(nombreCompleto);
   const numeroVenta = escaparHtml(id);
@@ -196,6 +196,13 @@ export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante })
   const local = datosDelLocal();
   const telefonoSeguro = escaparHtml(local.telefono);
   const telefonoHref = numeroDeTelefono(local.telefono);
+  // QR adjunto (cid: 'qrpago', nunca data: URI: Gmail las bloquea). Codifica lo
+  // mismo que el QR del checkout, con el monto faltante.
+  const qrSeccion = qrBuffer ? `
+      <tr><td align="center" style="padding:8px 28px 4px;">
+        <p style="margin:0 0 10px;font-size:14px;color:#555555;">Escanea este código desde tu app Nequi o Bancolombia y envía el valor faltante</p>
+        <img src="cid:qrpago" alt="QR de pago" width="220" style="display:block;width:220px;height:220px;border:1px solid #eeeeee;border-radius:10px;" />
+      </td></tr>` : '';
   const subject = `Tu pedido #${id} tiene un saldo pendiente de ${faltanteTexto}`;
   const html = `
 <!DOCTYPE html>
@@ -211,12 +218,20 @@ export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante })
       </td></tr>
       <tr><td style="padding:16px 28px 8px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
         <tr><td style="padding:10px 14px;font-size:14px;color:#555555;border-bottom:1px solid #eeeeee;">Total del pedido</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;border-bottom:1px solid #eeeeee;"><strong>${escaparHtml(totalTexto)}</strong></td></tr>
-        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;border-bottom:1px solid #eeeeee;">Valor recibido</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;border-bottom:1px solid #eeeeee;">${escaparHtml(pagadoTexto)}</td></tr>
-        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;">Saldo pendiente</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;"><strong>${escaparHtml(faltanteTexto)}</strong></td></tr>
+        <tr><td style="padding:10px 14px;font-size:14px;color:#555555;">Valor recibido</td><td align="right" style="padding:10px 14px;font-size:14px;color:#222222;">${escaparHtml(pagadoTexto)}</td></tr>
       </table></td></tr>
+      <tr><td align="center" style="padding:16px 28px 8px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" style="background-color:#fafafa;border:1px solid #eeeeee;border-radius:10px;">
+          <tr><td align="center" style="padding:14px 36px;">
+            <p style="margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#555555;">Te falta pagar</p>
+            <p style="margin:6px 0 0;font-size:34px;font-weight:bold;line-height:1.2;color:#C62828;">${escaparHtml(faltanteTexto)}</p>
+          </td></tr>
+        </table>
+      </td></tr>
+      ${qrSeccion}
       <tr><td style="padding:12px 28px;color:#555555;font-size:14px;line-height:1.7;">
-        <p>Para continuar, envía el saldo pendiente por el mismo medio de pago que usaste y sube el comprobante en la sección "Mis pedidos".</p>
-        <p style="text-align:center;padding:8px 0 12px;"><a href="${urlPedidosSegura}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:15px;font-weight:bold;text-decoration:none !important;padding:14px 28px;border-radius:9px;">Subir comprobante</a></p>
+        <p>Después sube el comprobante en <strong>Mis pedidos &gt; Pedidos pendientes</strong>.</p>
+        <p style="text-align:center;padding:8px 0 12px;"><a href="${urlPedidosSegura}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:15px;font-weight:bold;text-decoration:none !important;padding:14px 28px;border-radius:9px;">Ir a Mis pedidos</a></p>
         <p>Tu pedido queda en espera hasta que recibamos el comprobante. Cuando lo verifiquemos, continuaremos con tu pedido.</p>
         <p>Si ya hiciste el pago o tienes alguna duda, comunícate con nosotros al <a href="tel:${telefonoHref}" style="color:#555555 !important;text-decoration:none !important;">${telefonoSeguro}</a>.</p>
         <p>Gracias por elegir Pizzería La Sirena.</p>
@@ -230,18 +245,21 @@ export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante })
     `Revisamos el pago de tu pedido #${id} y el valor recibido es menor al total del pedido.`, '',
     `Total del pedido: ${totalTexto}`,
     `Valor recibido: ${pagadoTexto}`,
-    `Saldo pendiente: ${faltanteTexto}`, '',
-    'Para continuar, envía el saldo pendiente por el mismo medio de pago que usaste y sube el comprobante en la sección "Mis pedidos".',
-    `Subir comprobante: ${urlPedidos}`, '',
+    `Te falta pagar: ${faltanteTexto}`, '',
+    'Escanea el código QR adjunto desde tu app Nequi o Bancolombia y envía el valor faltante.',
+    'Después sube el comprobante en Mis pedidos > Pedidos pendientes.',
+    `Ir a Mis pedidos: ${urlPedidos}`, '',
     'Tu pedido queda en espera hasta que recibamos el comprobante. Cuando lo verifiquemos, continuaremos con tu pedido.', '',
     `Si ya hiciste el pago o tienes alguna duda, comunícate con nosotros al ${local.telefono}.`, '',
     'Gracias por elegir Pizzería La Sirena.',
   ].join('\n');
+  const attachments = [{ filename: 'logo.png', path: RUTA_LOGO, cid: 'logo-sivpro' }];
+  if (qrBuffer) attachments.push({ filename: 'qr-pago.png', content: qrBuffer, cid: 'qrpago' });
   return {
     subject,
     html,
     text,
-    attachments: [{ filename: 'logo.png', path: RUTA_LOGO, cid: 'logo-sivpro' }],
+    attachments,
   };
 }
 

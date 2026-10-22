@@ -168,7 +168,11 @@ export async function listarClientes() {
     SELECT c.id_cliente, c.id_usuario, c.estado AS cliente_estado,
            u.tipo_documento, u.nombre, u.correo, u.telefono,
            u.estado AS usuario_estado, u.id_rol, r.nombre AS rol,
-           r.estado AS rol_estado
+           r.estado AS rol_estado,
+           (SELECT COUNT(*)::int
+              FROM tb_venta v
+             WHERE v.id_cliente = c.id_cliente
+               AND v.estado <> 'Anulado') AS pedidos
     FROM tb_cliente c
     JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
     JOIN tb_roles r ON r.id_rol = u.id_rol
