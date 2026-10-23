@@ -21,7 +21,7 @@ export async function obtenerCatalogoPublico(req, res, next) {
       `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo,
               p.precio_venta, p.unidad_venta, p.imagen, p.estado,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
-              c.emoji AS categoria_emoji
+              c.emoji AS categoria_emoji, p.stock, p.precio_grande
          FROM tb_productos p
          JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
         WHERE p.estado IN ('Disponible', 'No disponible') AND p.precio_venta > 0 AND c.estado = true
@@ -56,7 +56,8 @@ export async function obtenerProductosGestion(req, res, next) {
               p.contenido, p.contenido_unidad, p.unidad_compra,
               p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
-              c.emoji AS categoria_emoji, c.estado AS categoria_estado
+              c.emoji AS categoria_emoji, c.estado AS categoria_estado,
+              p.precio_grande
          FROM tb_productos p
          JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
         ORDER BY c.id_categoria, p.id_producto`

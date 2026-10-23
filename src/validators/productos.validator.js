@@ -92,6 +92,11 @@ function validarPrecioVenta(valor) {
   return precio;
 }
 
+function validarPrecioGrande(valor) {
+  if (valor === null || (typeof valor === 'string' && !valor.trim())) return null;
+  return numero(valor, 'precio_grande');
+}
+
 /** Campos propios de las bebidas (Reventa). En edición solo se pasan los que
     trae el body: la coherencia con lo guardado la resuelve el servicio. */
 function validarCamposBebida(body) {
@@ -154,6 +159,7 @@ export function validarCreacionProducto(body) {
     return {
       ...datos,
       precio_venta: validarPrecioVenta(entrada.precio_venta),
+      precio_grande: entrada.precio_grande === undefined ? null : validarPrecioGrande(entrada.precio_grande),
       contenido: null,
       contenido_unidad: null,
       unidad_compra: null,
@@ -179,7 +185,12 @@ export function validarCreacionProducto(body) {
     }
   }
 
-  return { ...datos, precio_venta: 0, ...bebida };
+  return {
+    ...datos,
+    precio_venta: 0,
+    precio_grande: entrada.precio_grande === undefined ? null : validarPrecioGrande(entrada.precio_grande),
+    ...bebida,
+  };
 }
 
 /**
@@ -202,6 +213,7 @@ export function validarEdicionProducto(body) {
   if (entrada.imagen !== undefined) datos.imagen = textoOpcional(entrada.imagen, 'imagen', MAX_IMAGEN);
   if (entrada.tipo !== undefined) datos.tipo = validarTipo(entrada.tipo);
   if (entrada.precio_venta !== undefined) datos.precio_venta = validarPrecioVenta(entrada.precio_venta);
+  if (entrada.precio_grande !== undefined) datos.precio_grande = validarPrecioGrande(entrada.precio_grande);
 
   Object.assign(datos, validarCamposBebida(entrada));
 
