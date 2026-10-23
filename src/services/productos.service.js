@@ -1,14 +1,6 @@
 import AppError from '../errors/AppError.js';
 import { transaction } from '../config/db.js';
-
-/** Copia EXACTA de ventas.service.js (normalizarCategoria) para comparar
-    nombres de categoría sin tildes ni mayúsculas. ventas.service.js no se toca. */
-const normalizarCategoria = (nombre) =>
-  String(nombre || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase();
+import normalizarCategoria from '../utils/normalizarCategoria.js';
 
 /** Categorías que exigen un único tipo de producto. Las que no están en la
     lista (p. ej. "pollo") aceptan tanto Elaborado como Reventa. */
@@ -35,7 +27,18 @@ const COLUMNAS_GESTION = `
   p.contenido, p.contenido_unidad, p.unidad_compra,
   p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
   c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
-  c.emoji AS categoria_emoji, c.estado AS categoria_estado`;
+  c.emoji AS categoria_emoji, c.estado AS categoria_estado,
+  p.precio_grande`;
+
+function validarPrecioGrande(tipo, nombreCategoria, precioVenta, precioGrande) {
+  if (precioGrande === null || precioGrande === undefined) return;
+  if (tipo !== 'Elaborado' || normalizarCategoria(nombreCategoria) !== 'pizza') {
+    throw new AppError('Solo las pizzas tienen precio para tamaño Grande', 400);
+  }
+  if (Number(precioGrande) <= Number(precioVenta)) {
+    throw new AppError('El precio Grande debe ser mayor que el precio Mediana', 400);
+  }
+}
 
 async function traerProductoGestion(conexion, idProducto) {
   const { rows } = await conexion.query(
@@ -67,6 +70,9 @@ async function categoriaActiva(conexion, idCategoria) {
     nombre repetido de tb_productos traducido a su propio mensaje. */
 function mapearError(error) {
   if (error instanceof AppError) return error;
+  if (error?.code === '23514' && error?.constraint === 'ck_productos_precio_grande') {
+    return new AppError('El precio Grande debe ser mayor que el precio Mediana', 400);
+  }
   if (error?.code === '23505') {
     if (error?.constraint === 'tb_productos_nombre_key') {
       return new AppError('Ya existe un producto con ese nombre', 409);
@@ -94,18 +100,19 @@ export async function crearProducto(datos) {
   try {
     return await transaction(async (client) => {
       const categoria = await categoriaActiva(client, datos.id_categoria);
+      validarPrecioGrande(datos.tipo, categoria.nombre, datos.precio_venta, datos.precio_grande);
       verificarCoherenciaTipoCategoria(categoria.nombre, datos.tipo);
 
       const esElaborado = datos.tipo === 'Elaborado';
       const { rows } = await client.query(
         `INSERT INTO tb_productos
            (id_categoria, nombre, tipo, unidad_venta, imagen,
-            precio_venta, costo_unitario, stock, estado,
+            precio_venta, precio_grande, costo_unitario, stock, estado,
             contenido, contenido_unidad, unidad_compra, unidades_por_empaque,
             ultimo_monto_sin_iva, ultimo_iva_compra)
          VALUES ($1, $2, $3, $4, $5,
-                 $6, 0, 0, $7,
-                 $8, $9, $10, $11,
+                 $6, $7, 0, 0, $8,
+                 $9, $10, $11, $12,
                  NULL, NULL)
          RETURNING id_producto`,
         [
@@ -115,6 +122,7 @@ export async function crearProducto(datos) {
           datos.unidad_venta,
           datos.imagen,
           esElaborado ? datos.precio_venta : 0,
+          datos.precio_grande,
           esElaborado ? 'Disponible' : 'No disponible',
           datos.contenido,
           datos.contenido_unidad,
@@ -182,10 +190,13 @@ export async function editarProducto(idProducto, datos) {
   try {
     return await transaction(async (client) => {
       const { rows } = await client.query(
-        `SELECT id_producto, id_categoria, tipo, unidad_compra, unidades_por_empaque
-           FROM tb_productos
-          WHERE id_producto = $1
-          FOR UPDATE`,
+        `SELECT p.id_producto, p.id_categoria, p.tipo, p.unidad_compra,
+                p.unidades_por_empaque, p.precio_venta, p.precio_grande,
+                c.nombre AS categoria_nombre
+           FROM tb_productos p
+           JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+          WHERE p.id_producto = $1
+          FOR UPDATE OF p`,
         [idProducto]
       );
       const actual = rows[0];
@@ -196,6 +207,7 @@ export async function editarProducto(idProducto, datos) {
       }
 
       const cambios = {};
+      let categoriaFinal = { nombre: actual.categoria_nombre };
       if (datos.nombre !== undefined) cambios.nombre = datos.nombre;
       if (datos.unidad_venta !== undefined) cambios.unidad_venta = datos.unidad_venta;
       if (datos.imagen !== undefined) cambios.imagen = datos.imagen;
@@ -203,8 +215,17 @@ export async function editarProducto(idProducto, datos) {
       if (datos.id_categoria !== undefined && datos.id_categoria !== actual.id_categoria) {
         const categoria = await categoriaActiva(client, datos.id_categoria);
         verificarCoherenciaTipoCategoria(categoria.nombre, actual.tipo);
+        categoriaFinal = categoria;
         cambios.id_categoria = datos.id_categoria;
       }
+
+      const precioVentaFinal = actual.tipo === 'Elaborado' && datos.precio_venta !== undefined
+        ? datos.precio_venta
+        : actual.precio_venta;
+      const precioGrandeFinal = datos.precio_grande !== undefined
+        ? datos.precio_grande
+        : actual.precio_grande;
+      validarPrecioGrande(actual.tipo, categoriaFinal.nombre, precioVentaFinal, precioGrandeFinal);
 
       if (actual.tipo === 'Reventa') {
         Object.assign(cambios, combinarBebida(actual, datos));
@@ -212,6 +233,7 @@ export async function editarProducto(idProducto, datos) {
       } else if (datos.precio_venta !== undefined) {
         cambios.precio_venta = datos.precio_venta;
       }
+      if (datos.precio_grande !== undefined) cambios.precio_grande = datos.precio_grande;
 
       if (Object.keys(cambios).length > 0) {
         const asignaciones = Object.keys(cambios)
@@ -276,48 +298,50 @@ export async function cambiarEstadoProducto(idProducto, estado) {
  * el precio de venta por unidad con IVA y deja la bebida 'Disponible' solo si
  * estaba 'No disponible' con precio anterior 0. 'Descontinuado' no cambia.
  */
+export async function registrarEntradaCompraEnTransaccion(client, idProducto, datos) {
+  const { rows } = await client.query(
+    `SELECT id_producto, nombre, tipo
+       FROM tb_productos
+      WHERE id_producto = $1
+      FOR UPDATE`,
+    [idProducto]
+  );
+  const actual = rows[0];
+  if (!actual) throw new AppError('Producto no encontrado.', 404);
+  if (actual.tipo !== 'Reventa') {
+    throw new AppError('Solo las bebidas (tipo Reventa) admiten entrada de compra.', 400);
+  }
+
+  // El CASE lee estado y precio_venta de la fila ANTERIOR al update.
+  await client.query(
+    `UPDATE tb_productos
+        SET stock = stock + $2,
+            costo_unitario = $3,
+            precio_venta = $4,
+            ultimo_monto_sin_iva = $5,
+            ultimo_iva_compra = $6,
+            estado = CASE
+                       WHEN estado = 'No disponible' AND precio_venta = 0
+                         THEN 'Disponible'
+                       ELSE estado
+                     END
+      WHERE id_producto = $1`,
+    [
+      idProducto,
+      datos.unidades,
+      datos.costo_unitario,
+      datos.precio_venta,
+      datos.ultimo_monto_sin_iva,
+      datos.ultimo_iva_compra,
+    ]
+  );
+
+  return traerProductoGestion(client, idProducto);
+}
+
 export async function registrarEntradaCompra(idProducto, datos) {
   try {
-    return await transaction(async (client) => {
-      const { rows } = await client.query(
-        `SELECT id_producto, nombre, tipo
-           FROM tb_productos
-          WHERE id_producto = $1
-          FOR UPDATE`,
-        [idProducto]
-      );
-      const actual = rows[0];
-      if (!actual) throw new AppError('Producto no encontrado.', 404);
-      if (actual.tipo !== 'Reventa') {
-        throw new AppError('Solo las bebidas (tipo Reventa) admiten entrada de compra.', 400);
-      }
-
-      // El CASE lee estado y precio_venta de la fila ANTERIOR al update.
-      await client.query(
-        `UPDATE tb_productos
-            SET stock = stock + $2,
-                costo_unitario = $3,
-                precio_venta = $4,
-                ultimo_monto_sin_iva = $5,
-                ultimo_iva_compra = $6,
-                estado = CASE
-                           WHEN estado = 'No disponible' AND precio_venta = 0
-                             THEN 'Disponible'
-                           ELSE estado
-                         END
-          WHERE id_producto = $1`,
-        [
-          idProducto,
-          datos.unidades,
-          datos.costo_unitario,
-          datos.precio_venta,
-          datos.ultimo_monto_sin_iva,
-          datos.ultimo_iva_compra,
-        ]
-      );
-
-      return await traerProductoGestion(client, idProducto);
-    });
+    return await transaction((client) => registrarEntradaCompraEnTransaccion(client, idProducto, datos));
   } catch (error) {
     throw mapearError(error);
   }
@@ -328,39 +352,41 @@ export async function registrarEntradaCompra(idProducto, datos) {
  * Devuelve al stock las unidades compradas por error. No revierte precio ni
  * costo, y solo descuenta si todavía alcanza el stock (si no, 409).
  */
+export async function revertirCompraEnTransaccion(client, idProducto, datos) {
+  const { rows } = await client.query(
+    `SELECT id_producto, nombre, tipo
+       FROM tb_productos
+      WHERE id_producto = $1
+      FOR UPDATE`,
+    [idProducto]
+  );
+  const actual = rows[0];
+  if (!actual) throw new AppError('Producto no encontrado.', 404);
+  if (actual.tipo !== 'Reventa') {
+    throw new AppError('Solo las bebidas (tipo Reventa) admiten reversa de compra.', 400);
+  }
+
+  const { rowCount } = await client.query(
+    `UPDATE tb_productos
+        SET stock = stock - $2
+      WHERE id_producto = $1
+        AND tipo = 'Reventa'
+        AND stock >= $2`,
+    [idProducto, datos.unidades]
+  );
+  if (rowCount === 0) {
+    throw new AppError(
+      `No se puede revertir: ya se vendieron unidades de «${actual.nombre}»`,
+      409
+    );
+  }
+
+  return traerProductoGestion(client, idProducto);
+}
+
 export async function revertirCompra(idProducto, datos) {
   try {
-    return await transaction(async (client) => {
-      const { rows } = await client.query(
-        `SELECT id_producto, nombre, tipo
-           FROM tb_productos
-          WHERE id_producto = $1
-          FOR UPDATE`,
-        [idProducto]
-      );
-      const actual = rows[0];
-      if (!actual) throw new AppError('Producto no encontrado.', 404);
-      if (actual.tipo !== 'Reventa') {
-        throw new AppError('Solo las bebidas (tipo Reventa) admiten reversa de compra.', 400);
-      }
-
-      const { rowCount } = await client.query(
-        `UPDATE tb_productos
-            SET stock = stock - $2
-          WHERE id_producto = $1
-            AND tipo = 'Reventa'
-            AND stock >= $2`,
-        [idProducto, datos.unidades]
-      );
-      if (rowCount === 0) {
-        throw new AppError(
-          `No se puede revertir: ya se vendieron unidades de «${actual.nombre}»`,
-          409
-        );
-      }
-
-      return await traerProductoGestion(client, idProducto);
-    });
+    return await transaction((client) => revertirCompraEnTransaccion(client, idProducto, datos));
   } catch (error) {
     throw mapearError(error);
   }

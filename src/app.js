@@ -11,6 +11,12 @@ import empleadosRouter from './routes/empleados.routes.js';
 import rolesRouter from './routes/roles.routes.js';
 import productosRouter from './routes/productos.routes.js';
 import ventasRouter from './routes/ventas.routes.js';
+import insumosRouter from './routes/insumos.routes.js';
+import fichasRouter from './routes/fichas.routes.js';
+import ordenesProduccionRouter from './routes/ordenesProduccion.routes.js';
+import proveedoresRouter from './routes/proveedores.routes.js';
+import ordenesCompraRouter from './routes/ordenesCompra.routes.js';
+import comprasRouter from './routes/compras.routes.js';
 
 const app = express();
 
@@ -48,6 +54,12 @@ app.use('/api', empleadosRouter);
 app.use('/api', rolesRouter);
 app.use('/api', productosRouter);
 app.use('/api', ventasRouter);
+app.use('/api', insumosRouter);
+app.use('/api', fichasRouter);
+app.use('/api', ordenesProduccionRouter);
+app.use('/api', proveedoresRouter);
+app.use('/api', ordenesCompraRouter);
+app.use('/api', comprasRouter);
 
 app.use((req, res) => {
   res.status(404).json({

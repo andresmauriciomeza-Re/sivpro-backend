@@ -7,6 +7,7 @@ const normalizarNombre = (valor) => {
 };
 import { query, transaction } from '../config/db.js';
 import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
+import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
@@ -29,10 +30,6 @@ function fechaHoraBogota(fecha = new Date()) {
     timestamp: `${valor.year}-${valor.month}-${valor.day} ${valor.hour}:${valor.minute}:${valor.second}`,
     minutos: Number(valor.hour) * 60 + Number(valor.minute),
   };
-}
-
-function normalizarCategoria(nombre) {
-  return String(nombre || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
 }
 
 function validarFechaRecogida(hora) {
@@ -61,7 +58,12 @@ function precioYTamano(producto, tamano) {
   const tipo = producto.tipo;
   if (tipo === 'Elaborado' && categoria === 'pizza') {
     if (!['Mediana', 'Grande'].includes(tamano)) throw new AppError(`Selecciona Mediana o Grande para ${producto.nombre}.`, 400);
-    return Number(producto.precio_venta) + (tamano === 'Grande' ? RECARGO_PIZZA_GRANDE : 0);
+    if (tamano === 'Grande') {
+      return producto.precio_grande == null
+        ? Number(producto.precio_venta) + RECARGO_PIZZA_GRANDE
+        : Number(producto.precio_grande);
+    }
+    return Number(producto.precio_venta);
   }
   if (tipo === 'Elaborado' && categoria === 'lasana') {
     if (tamano !== 'Normal') throw new AppError(`El tamaño de ${producto.nombre} debe ser Normal.`, 400);
@@ -75,13 +77,36 @@ function precioYTamano(producto, tamano) {
 }
 
 function validarProductosDeBase(lineas, productos) {
-  if (productos.length !== lineas.length) throw new AppError('Uno o más productos no existen o no están disponibles.', 400);
   const porId = new Map(productos.map((producto) => [Number(producto.id_producto), producto]));
+  if (lineas.some((linea) => {
+    const producto = porId.get(linea.idProducto);
+    return !producto || producto.estado !== 'Disponible' || !producto.categoria_activa;
+  })) {
+    throw new AppError('Uno o más productos no existen o no están disponibles.', 400);
+  }
+
+  const cantidadesReventa = new Map();
+  for (const linea of lineas) {
+    const producto = porId.get(linea.idProducto);
+    if (producto.tipo === 'Reventa') {
+      cantidadesReventa.set(linea.idProducto, (cantidadesReventa.get(linea.idProducto) || 0) + linea.cantidad);
+    }
+  }
+  for (const [idProducto, cantidad] of cantidadesReventa) {
+    const producto = porId.get(idProducto);
+    const stock = Number(producto.stock);
+    if (cantidad > stock) {
+      throw new AppError(
+        stock === 0
+          ? `«${producto.nombre}» está agotado`
+          : `Solo quedan ${stock} unidades de «${producto.nombre}»`,
+        409
+      );
+    }
+  }
+
   return lineas.map((linea) => {
     const producto = porId.get(linea.idProducto);
-    if (!producto || producto.estado !== 'Disponible' || !producto.categoria_activa) {
-      throw new AppError('Uno o más productos no existen o no están disponibles.', 400);
-    }
     const precio = precioYTamano(producto, linea.tamano);
     const subtotal = precio * linea.cantidad;
     if (!Number.isFinite(precio) || precio < 0 || !Number.isFinite(subtotal)) {
@@ -149,7 +174,7 @@ async function cargarProductosParaVenta(client, lineas) {
   const ids = lineas.map((linea) => linea.idProducto);
   const { rows } = await client.query(
     `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo, p.precio_venta,
-            p.unidad_venta, p.stock, p.estado, c.nombre AS categoria_nombre,
+            p.unidad_venta, p.stock, p.precio_grande, p.estado, c.nombre AS categoria_nombre,
             c.estado AS categoria_activa
        FROM tb_productos p
        JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
