@@ -924,3 +924,115 @@ export function buildIngresoEquipoEmail(datos) {
     attachments,
   };
 }
+
+// ─────────────────────── VERIFICACIÓN DE CORREO (registro público) ───────────────────────
+
+/**
+ * "Confirma tu correo": el cliente se registró y su cuenta queda pendiente hasta
+ * abrir el enlace ?verificar=<token> (un solo uso, 24 horas). La fecha de
+ * vencimiento llega CALCULADA en JavaScript, igual que en la invitación.
+ */
+export function buildVerificacionCorreoEmail(datos) {
+  const nombre = String(datos?.nombre ?? '').trim() || 'cliente';
+  const primerNombre = aCapitalo(nombre.split(/\s+/)[0]) || 'cliente';
+  const vencimiento = datos?.vencimiento instanceof Date
+    ? datos.vencimiento
+    : new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const vencimientoTexto = formatearFechaBogota(vencimiento);
+  const enlace = `${urlFrontendPrincipal()}/?verificar=${encodeURIComponent(String(datos?.token ?? ''))}`;
+
+  const primerNombreSeguro = escaparHtml(primerNombre);
+  const enlaceSeguro = escaparHtml(enlace);
+  const vencimientoSeguro = escaparHtml(vencimientoTexto);
+
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <title>Confirma tu correo</title>
+  <style>
+    /* Apple Mail / iOS: los detectores de datos no deben pintar de azul
+       direcciones, teléfonos ni fechas del correo. */
+    a[x-apple-data-detectors] {
+      color: inherit !important;
+      text-decoration: none !important;
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
+    Confirma tu correo para activar tu cuenta de S.I.V.PRO.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+          ${encabezadoCompartido()}
+          <tr>
+            <td style="padding:32px 28px 6px 28px;color:#222222;">
+              <h1 style="margin:0 0 10px 0;font-size:22px;">¡Hola, ${primerNombreSeguro}!</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">
+                Gracias por registrarte en la <strong>Pizzería La Sirena</strong>. Para activar tu cuenta, confirma que este correo es tuyo con el botón de abajo.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 28px 8px 28px;">
+              <a href="${enlaceSeguro}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:16px;font-weight:bold;text-decoration:none !important;padding:16px 34px;border-radius:10px;">Confirmar mi correo</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;text-align:center;">
+                Este enlace es personal y solo sirve una vez. Vence el <strong>${vencimientoSeguro}</strong> (24 horas). Si venció, inicia sesión y pulsa «Reenviar correo de confirmación».
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;background-color:#fff8e6;border:1px solid #f5e3b3;border-radius:8px;padding:12px 14px;">
+                <strong>Nota de seguridad:</strong> Si no creaste esta cuenta, ignora este mensaje: sin confirmar no se puede usar.
+              </p>
+            </td>
+          </tr>
+          ${pieCompartido()}
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const text = [
+    'Confirma tu correo',
+    '',
+    `¡Hola, ${primerNombre}!`,
+    'Gracias por registrarte en la Pizzería La Sirena. Para activar tu cuenta, confirma que este correo es tuyo.',
+    '',
+    `Confirmar mi correo: ${enlace}`,
+    `Este enlace es personal y solo sirve una vez. Vence el ${vencimientoTexto} (24 horas). Si venció, inicia sesión y pulsa «Reenviar correo de confirmación».`,
+    '',
+    'Nota de seguridad: Si no creaste esta cuenta, ignora este mensaje: sin confirmar no se puede usar.',
+    '',
+    '© 2026 Pizzería La Sirena · S.I.V.PRO',
+  ].join('\n');
+
+  const attachments = [
+    {
+      filename: 'logo.png',
+      path: RUTA_LOGO,
+      cid: 'logo-sivpro',
+    },
+  ];
+
+  return {
+    subject: 'Confirma tu correo — Pizzería La Sirena',
+    html,
+    text,
+    attachments,
+  };
+}

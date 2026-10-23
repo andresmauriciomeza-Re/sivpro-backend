@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { query, transaction } from '../config/db.js';
+import { pool, query, transaction } from '../config/db.js';
 import { compararNombreInsumo, convertirUnidad, normalizarPasos, redondearDosDecimales } from '../utils/insumos.js';
 import { crearPreparacionEnTransaccion } from './ordenesProduccion.service.js';
 import { fechaHoraBogota } from '../utils/produccion.js';
@@ -242,7 +242,7 @@ export async function listarInsumos(filtros) {
       [fichasVigentes.map((row) => Number(row.id_insumo))]
     )
     : { rows: [] };
-  const lineasPorFicha = await cargarLineasFicha(query, fichas.map((ficha) => Number(ficha.id_ft)));
+  const lineasPorFicha = await cargarLineasFicha(pool, fichas.map((ficha) => Number(ficha.id_ft)));
   const fichaPorInsumo = new Map();
   for (const ficha of fichas) {
     const idInsumo = Number(ficha.id_insumo);
@@ -262,7 +262,7 @@ export async function obtenerInsumo(idInsumo) {
     [idInsumo]
   );
   if (!rows[0]) throw new AppError('Insumo no encontrado.', 404);
-  const ficha = rows[0].tipo === 'Producto insumo' ? await cargarFichaVigenteInsumo(query, idInsumo) : null;
+  const ficha = rows[0].tipo === 'Producto insumo' ? await cargarFichaVigenteInsumo(pool, idInsumo) : null;
   return mapearInsumo(rows[0], ficha);
 }
 

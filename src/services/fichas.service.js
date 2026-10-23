@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { query, transaction } from '../config/db.js';
+import { pool, query, transaction } from '../config/db.js';
 import { convertirUnidad, normalizarPasos, redondearDosDecimales } from '../utils/insumos.js';
 
 const COLUMNAS_FICHA = `
@@ -124,7 +124,7 @@ export async function listarFichasPropietario(datos) {
       ORDER BY ft.version DESC, ft.fecha_inicio DESC`,
     [id]
   );
-  return mapearFichas(query, rows);
+  return mapearFichas(pool, rows);
 }
 
 export async function listarFichasVigentes() {
@@ -134,7 +134,7 @@ export async function listarFichasVigentes() {
       WHERE ft.fecha_final IS NULL
       ORDER BY ft.id_producto NULLS LAST, ft.id_insumo NULLS LAST`
   );
-  return mapearFichas(query, rows);
+  return mapearFichas(pool, rows);
 }
 
 function normalizarCategoria(nombre) {

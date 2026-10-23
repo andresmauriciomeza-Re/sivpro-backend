@@ -30,13 +30,27 @@ export function validarLogin(req, res, next) {
   next();
 }
 
-const TIPOS_DOCUMENTO = ['CC', 'CE', 'PP'];
+// Registro público: solo CC, CE y Pasaporte (el frontend manda el código "PP";
+// "Pasaporte" se acepta como alias). TI u otro tipo → 400.
+const TIPOS_DOCUMENTO = ['CC', 'CE', 'PP', 'Pasaporte'];
 
 const TIPO_GUARDADO = {
   CC: 'CC',
   CE: 'CE',
   PP: 'Pasaporte',
+  Pasaporte: 'Pasaporte',
 };
+
+// Lista blanca del registro público: cualquier otra clave (rol, estado, id…)
+// se rechaza con 400.
+const CAMPOS_REGISTRO = [
+  'tipoDocumento',
+  'numeroDocumento',
+  'nombre',
+  'correo',
+  'telefono',
+  'contrasena',
+];
 
 const LONGITUD_NUMERO = {
   CC: { min: 6, max: 10 },
@@ -46,12 +60,15 @@ const LONGITUD_NUMERO = {
 
 const LETRA = '[A-Za-z\\u00C1-\\u00D6\\u00D8-\\u00DC\\u00E1-\\u00F6\\u00F8-\\u00FC]';
 const REGEX_NOMBRE = new RegExp(`^${LETRA}+(?: ${LETRA}+)*$`);
+// Mismo formato que el frontend (campo.tsx): sin lista de dominios; local con
+// letras, dígitos y . _ % + -, y extensión final de al menos 2 letras.
 const REGEX_CORREO =
-  /^[A-Za-z0-9._-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+  /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 // Regla única de teléfono (misma que el frontend): solo números, entre 7 y
 // 15 dígitos. Ya no se exige empezar por 3 (acepta fijo o celular).
 const REGEX_TELEFONO = /^\d{7,15}$/;
-const REGEX_PASSWORD_SEGURA = /(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
+// Igual que el frontend: minúscula y mayúscula Unicode (Ñ, Á… cuentan) y un número.
+const REGEX_PASSWORD_SEGURA = /(?=.*\p{Ll})(?=.*\p{Lu})(?=.*\d)/u;
 
 const MAX_CORREO = 60;
 const MAX_NOMBRE = 100;
@@ -80,6 +97,10 @@ export function validarFormatoCorreo(correo) {
 
   const correoLimpio = correo.trim().toLowerCase();
   if (correoLimpio.length > MAX_CORREO || !REGEX_CORREO.test(correoLimpio)) {
+    throw new AppError(MENSAJES.correo, 400);
+  }
+  const local = correoLimpio.split('@')[0];
+  if (local.startsWith('.') || local.endsWith('.')) {
     throw new AppError(MENSAJES.correo, 400);
   }
 
@@ -127,6 +148,13 @@ export function validarActualizacionPerfil(req, res, next) {
 
 export function validarRegistro(req, res, next) {
   const body = req.body || {};
+
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    throw new AppError('La solicitud no es válida.', 400);
+  }
+  if (Object.keys(body).some((campo) => !CAMPOS_REGISTRO.includes(campo))) {
+    throw new AppError('La solicitud tiene campos no permitidos.', 400);
+  }
 
   const { tipoDocumento, numeroDocumento, nombre, correo, telefono, contrasena } =
     body;

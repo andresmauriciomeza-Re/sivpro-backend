@@ -5,6 +5,7 @@ import {
   buildInvitacionEmpleadoEmail,
   buildPasswordChangedEmail,
   buildResetEmail,
+  buildVerificacionCorreoEmail,
   buildWelcomeEmail,
   buildMontoFaltanteEmail,
 } from '../utils/emailTemplates.js';
@@ -177,6 +178,44 @@ export async function enviarInvitacionEmpleado(datos) {
   } catch (error) {
     console.error(
       `No se pudo enviar la invitación de empleado a ${correo}: ${error?.code || error?.message || error}`
+    );
+    return false;
+  }
+}
+
+/**
+ * "Confirma tu correo" del registro público (enlace ?verificar=<token>). Mismo
+ * contrato que enviarInvitacionEmpleado: la cuenta ya quedó creada, así que
+ * nunca lanza; devuelve true si el correo salió y false en cualquier otro caso
+ * (el cliente puede pedir "Reenviar correo de confirmación" desde el login).
+ */
+export async function enviarCorreoVerificacion(datos) {
+  const correo = String(datos?.correo ?? '').trim();
+  if (!correo) {
+    console.error('Correo de verificación omitido: sin correo de destino');
+    return false;
+  }
+  if (!hayCredenciales()) {
+    console.log('Correo no configurado (MAIL_USER / MAIL_PASS): verificación de correo omitida');
+    return false;
+  }
+
+  try {
+    const mail = buildVerificacionCorreoEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      attachments: mail.attachments,
+    });
+    console.log(`Correo de verificación enviado a ${correo}`);
+    return true;
+  } catch (error) {
+    console.error(
+      `No se pudo enviar el correo de verificación a ${correo}: ${error?.code || error?.message || error}`
     );
     return false;
   }

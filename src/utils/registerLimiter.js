@@ -1,6 +1,8 @@
 import AppError from '../errors/AppError.js';
 
-const MAX_REGISTROS = 10;
+// Máximo de registros por IP en la ventana: cuentan los registros exitosos y
+// los rechazados por duplicado (409); los 400 de validación no consumen cupo.
+const MAX_REGISTROS = 3;
 const VENTANA_MS = 60 * 60 * 1000;
 
 const registros = new Map();
@@ -24,7 +26,7 @@ export function registerRateLimit(req, res, next) {
   if (entrada && entrada.total >= MAX_REGISTROS) {
     return next(
       new AppError(
-        'Demasiados registros desde esta IP. Intenta de nuevo más tarde.',
+        'Alcanzaste el límite de 3 registros por hora desde esta conexión. Intenta de nuevo más tarde.',
         429
       )
     );

@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { query, transaction } from '../config/db.js';
+import { pool, query, transaction } from '../config/db.js';
 import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/produccion.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
@@ -251,14 +251,14 @@ export async function listarOrdenesProduccion(filtros) {
   );
   const ordenes = [];
   for (const row of rows) {
-    const lineas = await cargarLineasOrden(query, Number(row.id_orden_produccion));
+    const lineas = await cargarLineasOrden(pool, Number(row.id_orden_produccion));
     ordenes.push(mapearOrden(row, lineas));
   }
   return ordenes;
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
-  const { orden } = await obtenerOrdenEnConexion(query, idOrden);
+  const { orden } = await obtenerOrdenEnConexion(pool, idOrden);
   return orden;
 }
 
@@ -269,7 +269,7 @@ async function cargarDatosRequeridos(client, idOrden, bloquearInsumos = false) {
 }
 
 export async function obtenerRequeridosOrdenProduccion(idOrden) {
-  const { calculo } = await cargarDatosRequeridos(query, idOrden);
+  const { calculo } = await cargarDatosRequeridos(pool, idOrden);
   return { requeridos: calculo.requeridos, faltantes: calculo.faltantes };
 }
 

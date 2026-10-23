@@ -4,7 +4,14 @@ import {
   obtenerUsuarioPorId,
   registrarCliente,
 } from '../services/auth.service.js';
-import { enviarCorreoBienvenida } from '../services/mail.service.js';
+import {
+  enviarCorreoBienvenida,
+  enviarCorreoVerificacion,
+} from '../services/mail.service.js';
+import {
+  reenviarVerificacion,
+  verificarCorreo,
+} from '../services/verificacion.service.js';
 import {
   registrarFallo,
   reiniciarIntentos,
@@ -53,31 +60,45 @@ export async function actualizarPerfil(req, res, next) {
 
 export async function registrar(req, res, next) {
   try {
-    const resultado = await registrarCliente(req.body);
+    const { usuario, verificacion } = await registrarCliente(req.body);
     registrarIntento(req.claveRegistro);
 
-    // Correo de bienvenida: se dispara DESPUÉS de guardar con éxito y sin
-    // esperarlo (fire-and-forget). Si el SMTP falla, el registro ya está hecho
-    // y la respuesta sigue siendo 201; el error (correo destino + motivo) queda
-    // en la consola. Si el registro falla, nunca llegamos aquí.
-    const { tipoDocumento, numeroDocumento, nombre, correo, telefono } = req.body;
-    enviarCorreoBienvenida({
-      nombre,
-      correo,
-      telefono,
-      tipoDocumento,
-      numeroDocumento,
-    }).catch((error) => {
-      console.error(
-        `No se pudo enviar el bienvenida a ${correo}: ${error?.code || error?.message || error}`
-      );
+    // "Confirma tu correo": la cuenta queda pendiente hasta abrir el enlace.
+    // Nunca lanza; si el SMTP falla, la cuenta ya está creada (201) y el
+    // cliente puede pedir "Reenviar correo de confirmación" desde el login.
+    // La bienvenida se envía al verificar el correo.
+    const correoEnviado = await enviarCorreoVerificacion({
+      nombre: usuario.nombre,
+      correo: usuario.correo,
+      token: verificacion.token,
+      vencimiento: verificacion.vencimiento,
     });
 
-    res.status(201).json(resultado);
+    res.status(201).json({ usuario, pendienteVerificacion: true, correoEnviado });
   } catch (error) {
     if (error.statusCode === 409) {
       registrarIntento(req.claveRegistro);
     }
+    next(error);
+  }
+}
+
+export async function verificarCorreoControlador(req, res, next) {
+  try {
+    const { mensaje, correo, usuario } = await verificarCorreo(req.body.token);
+    // Bienvenida de siempre, ya con el correo confirmado (fire-and-forget:
+    // captura su propio error y nunca lanza).
+    void enviarCorreoBienvenida(usuario);
+    res.status(200).json({ mensaje, correo });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function reenviarVerificacionControlador(req, res, next) {
+  try {
+    res.status(200).json(await reenviarVerificacion(req.body.correo));
+  } catch (error) {
     next(error);
   }
 }
