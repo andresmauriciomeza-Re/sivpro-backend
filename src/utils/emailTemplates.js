@@ -617,3 +617,310 @@ export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
     attachments,
   };
 }
+
+// ─────────────────────── INVITACIÓN DE EMPLEADO (alta de cuenta) ───────────────────────
+
+/** URL principal del frontend (FRONTEND_URL puede traer varias separadas por
+ *  coma: se usa la primera, igual que hace buildMontoFaltanteEmail). */
+function urlFrontendPrincipal() {
+  return urlDelFrontend().split(',')[0].trim().replace(/\/+$/, '');
+}
+
+/** 'YYYY-MM-DD' → "01 de marzo de 2026" (sin desfase de zona horaria: se arma
+ *  la fecha con UTC y se formatea en UTC para leer solo el día calendario). */
+function formatearFechaLarga(fechaIso) {
+  const texto = String(fechaIso ?? '').trim();
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto);
+  if (!partes) return texto || '—';
+  const fecha = new Date(Date.UTC(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3])));
+  return new Intl.DateTimeFormat('es-CO', {
+    timeZone: 'UTC',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(fecha);
+}
+
+/** Datos comunes del resumen de la cuenta de empleado (tabla de filas). */
+function filasResumenEmpleado(datos) {
+  const nombre = escaparHtml(String(datos?.nombre ?? '').trim() || '—');
+  const correo = escaparHtml(String(datos?.correo ?? '').trim() || '—');
+  const tipoDocumento = String(datos?.tipoDocumento ?? '').trim();
+  const numeroDocumento = String(datos?.numeroDocumento ?? '').trim();
+  const etiquetaTipo = ETIQUETAS_DOCUMENTO[tipoDocumento] || tipoDocumento || '—';
+  const documento = numeroDocumento
+    ? `${etiquetaTipo} ${enmascararDocumento(numeroDocumento)}`
+    : '—';
+  const roles = Array.isArray(datos?.roles) && datos.roles.length > 0
+    ? datos.roles.join(', ')
+    : 'Empleado';
+  const fechaInicio = formatearFechaLarga(datos?.fechaInicio);
+
+  const filaResumen = (etiqueta, valor, ultima = false) => {
+    const borde = ultima ? '' : 'border-bottom:1px solid #eeeeee;';
+    return `
+            <tr>
+              <td style="padding:10px 14px;font-size:14px;color:#777777;${borde}white-space:nowrap;">
+                <strong>${etiqueta}</strong>
+              </td>
+              <td style="padding:10px 14px;font-size:14px;color:#222222;${borde}">
+                ${valor}
+              </td>
+            </tr>`;
+  };
+
+  return `
+                ${filaResumen('Nombre completo', nombre)}
+                ${filaResumen('Correo', `<a href="mailto:${correo}" style="color:#222222 !important;text-decoration:none !important;">${correo}</a>`)}
+                ${filaResumen('Documento', escaparHtml(documento))}
+                ${filaResumen('Rol(es)', escaparHtml(roles))}
+                ${filaResumen('Fecha de inicio', escaparHtml(fechaInicio), true)}`;
+}
+
+const NOTA_SEGURIDAD_EMPLEADO =
+  'Si no esperabas este mensaje, ignora este correo o escríbenos. Nunca te pediremos tu contraseña.';
+
+/**
+ * Invitación al equipo: la administración creó la cuenta del empleado y él debe
+ * crear su contraseña con el botón "Acceder" (?activar=<token>). Recibe SOLO
+ * datos públicos del perfil (nunca la contraseña) y el token de un solo uso.
+ * La fecha de vencimiento llega CALCULADA en JavaScript (no se lee de la BD).
+ */
+export function buildInvitacionEmpleadoEmail(datos) {
+  const nombre = String(datos?.nombre ?? '').trim() || 'empleado';
+  const primerNombre = aCapitalo(nombre.split(/\s+/)[0]) || 'empleado';
+  const vencimiento = datos?.vencimiento instanceof Date
+    ? datos.vencimiento
+    : new Date(Date.now() + 72 * 60 * 60 * 1000);
+  const vencimientoTexto = formatearFechaBogota(vencimiento);
+  const enlace = `${urlFrontendPrincipal()}/?activar=${encodeURIComponent(String(datos?.token ?? ''))}`;
+
+  const nombreSeguro = escaparHtml(nombre);
+  const primerNombreSeguro = escaparHtml(primerNombre);
+  const enlaceSeguro = escaparHtml(enlace);
+  const vencimientoSeguro = escaparHtml(vencimientoTexto);
+
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <title>Bienvenido(a) al equipo de La Sirena, activa tu cuenta</title>
+  <style>
+    /* Apple Mail / iOS: los detectores de datos no deben pintar de azul
+       direcciones, teléfonos ni fechas del correo. */
+    a[x-apple-data-detectors] {
+      color: inherit !important;
+      text-decoration: none !important;
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
+    La Pizzería La Sirena te creó una cuenta de empleado. Crea tu contraseña para activarla.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+          ${encabezadoCompartido()}
+          <tr>
+            <td style="padding:32px 28px 6px 28px;color:#222222;">
+              <h1 style="margin:0 0 10px 0;font-size:22px;">¡Hola, ${primerNombreSeguro}!</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">
+                La <strong>Pizzería La Sirena</strong> te creó una cuenta de empleado. Solo falta un paso para activarla: crea tu contraseña con el botón de abajo.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 28px 4px 28px;">
+              <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Datos de tu cuenta</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
+                ${filasResumenEmpleado(datos)}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 28px 8px 28px;">
+              <a href="${enlaceSeguro}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:16px;font-weight:bold;text-decoration:none !important;padding:16px 34px;border-radius:10px;">Acceder</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;text-align:center;">
+                Este enlace es personal y solo sirve una vez. Vence el <strong>${vencimientoSeguro}</strong>.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;background-color:#fff8e6;border:1px solid #f5e3b3;border-radius:8px;padding:12px 14px;">
+                <strong>Nota de seguridad:</strong> ${NOTA_SEGURIDAD_EMPLEADO}
+              </p>
+            </td>
+          </tr>
+          ${pieCompartido()}
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const text = [
+    'Bienvenido(a) al equipo de La Sirena',
+    '',
+    `¡Hola, ${primerNombre}!`,
+    'La Pizzería La Sirena te creó una cuenta de empleado. Solo falta un paso para activarla: crea tu contraseña.',
+    '',
+    'Datos de tu cuenta',
+    `- Nombre completo: ${nombre}`,
+    `- Correo: ${String(datos?.correo ?? '').trim() || '—'}`,
+    `- Documento: ${enmascararDocumento(datos?.numeroDocumento)}`,
+    `- Rol(es): ${(Array.isArray(datos?.roles) && datos.roles.length > 0 ? datos.roles.join(', ') : 'Empleado')}`,
+    `- Fecha de inicio: ${formatearFechaLarga(datos?.fechaInicio)}`,
+    '',
+    `Acceder: ${enlace}`,
+    `Este enlace es personal y solo sirve una vez. Vence el ${vencimientoTexto}.`,
+    '',
+    `Nota de seguridad: ${NOTA_SEGURIDAD_EMPLEADO}`,
+    '',
+    '© 2026 Pizzería La Sirena · S.I.V.PRO',
+  ].join('\n');
+
+  const attachments = [
+    {
+      filename: 'logo.png',
+      path: RUTA_LOGO,
+      cid: 'logo-sivpro',
+    },
+  ];
+
+  return {
+    subject: 'Bienvenido(a) al equipo de La Sirena — activa tu cuenta',
+    html,
+    text,
+    attachments,
+  };
+}
+
+/**
+ * Aviso a quien YA tenía cuenta con contraseña (cliente registrado) y acaba de
+ * ser contratado: no se crea contraseña nueva, solo se informa que ya es parte
+ * del equipo y el botón "Acceder" abre el login normal.
+ */
+export function buildIngresoEquipoEmail(datos) {
+  const nombre = String(datos?.nombre ?? '').trim() || 'empleado';
+  const primerNombre = aCapitalo(nombre.split(/\s+/)[0]) || 'empleado';
+  const enlace = urlFrontendPrincipal();
+
+  const primerNombreSeguro = escaparHtml(primerNombre);
+  const enlaceSeguro = escaparHtml(enlace);
+
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <title>Ya eres parte del equipo de La Sirena</title>
+  <style>
+    a[x-apple-data-detectors] {
+      color: inherit !important;
+      text-decoration: none !important;
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f4f7;">
+    Ya eres parte del equipo de Pizzería La Sirena. Entra con tu correo y contraseña habituales.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+          ${encabezadoCompartido()}
+          <tr>
+            <td style="padding:32px 28px 6px 28px;color:#222222;">
+              <h1 style="margin:0 0 10px 0;font-size:22px;">¡Hola, ${primerNombreSeguro}!</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">
+                Ya eres parte del equipo de <strong>Pizzería La Sirena</strong>. Tu cuenta ya existía en el sistema, así que <strong>conservas tu contraseña</strong>: no necesitas crear una nueva. Solo agregamos tu(s) cargo(s).
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 28px 4px 28px;">
+              <p style="margin:0 0 8px 0;font-size:16px;font-weight:bold;color:#222222;">Datos de tu cuenta</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-radius:10px;border-collapse:collapse;background-color:#fafafa;">
+                ${filasResumenEmpleado(datos)}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 28px 8px 28px;">
+              <a href="${enlaceSeguro}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:16px;font-weight:bold;text-decoration:none !important;padding:16px 34px;border-radius:10px;">Acceder</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;text-align:center;">
+                Usa tu correo y tu contraseña habituales para entrar.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 28px 4px 28px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#888888;background-color:#fff8e6;border:1px solid #f5e3b3;border-radius:8px;padding:12px 14px;">
+                <strong>Nota de seguridad:</strong> ${NOTA_SEGURIDAD_EMPLEADO}
+              </p>
+            </td>
+          </tr>
+          ${pieCompartido()}
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  const text = [
+    'Ya eres parte del equipo de La Sirena',
+    '',
+    `¡Hola, ${primerNombre}!`,
+    'Ya eres parte del equipo de Pizzería La Sirena. Tu cuenta ya existía en el sistema, así que conservas tu contraseña: no necesitas crear una nueva.',
+    '',
+    'Datos de tu cuenta',
+    `- Nombre completo: ${nombre}`,
+    `- Correo: ${String(datos?.correo ?? '').trim() || '—'}`,
+    `- Documento: ${enmascararDocumento(datos?.numeroDocumento)}`,
+    `- Rol(es): ${(Array.isArray(datos?.roles) && datos.roles.length > 0 ? datos.roles.join(', ') : 'Empleado')}`,
+    `- Fecha de inicio: ${formatearFechaLarga(datos?.fechaInicio)}`,
+    '',
+    `Acceder: ${enlace}`,
+    'Usa tu correo y tu contraseña habituales para entrar.',
+    '',
+    `Nota de seguridad: ${NOTA_SEGURIDAD_EMPLEADO}`,
+    '',
+    '© 2026 Pizzería La Sirena · S.I.V.PRO',
+  ].join('\n');
+
+  const attachments = [
+    {
+      filename: 'logo.png',
+      path: RUTA_LOGO,
+      cid: 'logo-sivpro',
+    },
+  ];
+
+  return {
+    subject: 'Ya eres parte del equipo de La Sirena',
+    html,
+    text,
+    attachments,
+  };
+}

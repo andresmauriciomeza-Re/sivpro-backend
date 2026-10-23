@@ -46,7 +46,8 @@ const ANULAR_CODIGO = `
 
 const RESTABLECER_CONTRASENA = `
   UPDATE tb_usuarios
-  SET contrasena = $1, codigo_recuperacion = NULL, codigo_expira = NULL
+  SET contrasena = $1, codigo_recuperacion = NULL, codigo_expira = NULL,
+      token_activacion = NULL, token_activacion_expira = NULL
   WHERE id_usuario = $2 AND codigo_recuperacion = $3
 `;
 

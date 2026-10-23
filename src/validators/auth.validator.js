@@ -192,26 +192,38 @@ export function validarRegistro(req, res, next) {
   next();
 }
 
-// Alta administrativa: mismas reglas públicas del registro, sin aceptar una
-// contraseña del cliente (el servicio genera una aleatoria).
-export function validarAltaCliente(req, res, next) {
-  const body = req.body || {};
-  const tipoOriginal = body.tipoDocumento;
-  const tipo = TIPO_GUARDADO[tipoOriginal];
+/**
+ * Datos básicos de una persona (alta de cliente o empleado): tipo y número de
+ * documento, nombre, correo y teléfono. `telefonoOpcional` acepta el formato
+ * del formulario de empleado, donde el teléfono puede ir vacío; con valor
+ * aplica la MISMA regla única (solo números, entre 7 y 15 dígitos).
+ */
+export function validarDatosPersona(body, { telefonoOpcional = false } = {}) {
+  const datos = body || {};
+  const tipo = TIPO_GUARDADO[datos.tipoDocumento];
   if (!tipo) throw new AppError(MENSAJES.tipoDocumento, 400);
-  const numero = typeof body.numeroDocumento === 'string' ? body.numeroDocumento.trim() : '';
+  const numero = typeof datos.numeroDocumento === 'string' ? datos.numeroDocumento.trim() : '';
   const limites = LONGITUD_NUMERO[tipo];
   if (!/^\d+$/.test(numero) || numero.length < limites.min || numero.length > limites.max) {
     throw new AppError(MENSAJES.numeroDocumento, 400);
   }
-  const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
+  const nombre = typeof datos.nombre === 'string' ? datos.nombre.trim() : '';
   if (nombre.length < MIN_NOMBRE || nombre.length > MAX_NOMBRE || !REGEX_NOMBRE.test(nombre)) {
     throw new AppError(MENSAJES.nombre, 400);
   }
-  const correo = validarFormatoCorreo(body.correo);
-  const telefono = typeof body.telefono === 'string' ? body.telefono.replace(/\s+/g, '') : '';
+  const correo = validarFormatoCorreo(datos.correo);
+  const telefono = typeof datos.telefono === 'string' ? datos.telefono.replace(/\s+/g, '') : '';
+  if (!telefono && telefonoOpcional) {
+    return { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono: '' };
+  }
   if (!REGEX_TELEFONO.test(telefono)) throw new AppError(MENSAJES.telefono, 400);
-  req.body = { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono };
+  return { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono };
+}
+
+// Alta administrativa: mismas reglas públicas del registro, sin aceptar una
+// contraseña del cliente (el servicio genera una aleatoria).
+export function validarAltaCliente(req, res, next) {
+  req.body = validarDatosPersona(req.body);
   next();
 }
 

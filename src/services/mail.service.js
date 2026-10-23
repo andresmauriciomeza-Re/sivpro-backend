@@ -1,6 +1,8 @@
 import nodemailer from 'nodemailer';
 import QRCode from 'qrcode';
 import {
+  buildIngresoEquipoEmail,
+  buildInvitacionEmpleadoEmail,
   buildPasswordChangedEmail,
   buildResetEmail,
   buildWelcomeEmail,
@@ -138,6 +140,82 @@ export async function enviarAvisoCambioContrasena(datos) {
     console.error(
       `No se pudo enviar el aviso de cambio de contraseña a ${correo}: ${error?.code || error?.message || error}`
     );
+  }
+}
+
+/**
+ * Invitación de empleado (alta de cuenta: el empleado crea su contraseña con el
+ * enlace ?activar=<token>). A diferencia del resto de correos, SÍ informa si el
+ * envío funcionó: el alta se completa igual y el panel necesita saber si debe
+ * mostrar "Empleado creado, pero no se pudo enviar el correo". Nunca lanza.
+ * Devuelve true si el correo salió, false en cualquier otro caso.
+ */
+export async function enviarInvitacionEmpleado(datos) {
+  const correo = String(datos?.correo ?? '').trim();
+  if (!correo) {
+    console.error('Invitación de empleado omitida: sin correo de destino');
+    return false;
+  }
+  if (!hayCredenciales()) {
+    console.log('Correo no configurado (MAIL_USER / MAIL_PASS): invitación de empleado omitida');
+    return false;
+  }
+
+  try {
+    const mail = buildInvitacionEmpleadoEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      attachments: mail.attachments,
+    });
+    console.log(`Invitación de empleado enviada a ${correo}`);
+    return true;
+  } catch (error) {
+    console.error(
+      `No se pudo enviar la invitación de empleado a ${correo}: ${error?.code || error?.message || error}`
+    );
+    return false;
+  }
+}
+
+/**
+ * Aviso "ya eres parte del equipo" para quien ya tenía cuenta con contraseña
+ * (cliente registrado que acaba de ser contratado). Mismo contrato que
+ * enviarInvitacionEmpleado: devuelve true/false y nunca lanza.
+ */
+export async function enviarAvisoIngresoEquipo(datos) {
+  const correo = String(datos?.correo ?? '').trim();
+  if (!correo) {
+    console.error('Aviso de ingreso al equipo omitido: sin correo de destino');
+    return false;
+  }
+  if (!hayCredenciales()) {
+    console.log('Correo no configurado (MAIL_USER / MAIL_PASS): aviso de ingreso al equipo omitido');
+    return false;
+  }
+
+  try {
+    const mail = buildIngresoEquipoEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      attachments: mail.attachments,
+    });
+    console.log(`Aviso de ingreso al equipo enviado a ${correo}`);
+    return true;
+  } catch (error) {
+    console.error(
+      `No se pudo enviar el aviso de ingreso al equipo a ${correo}: ${error?.code || error?.message || error}`
+    );
+    return false;
   }
 }
 

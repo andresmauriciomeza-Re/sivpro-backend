@@ -4,6 +4,7 @@ import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
 
 const CREDENCIALES_INVALIDAS = 'Correo o contraseña incorrectos.';
+const CUENTA_NO_ACTIVADA = 'Tu cuenta aún no está activada. Revisa tu correo.';
 const SIN_BASE_DE_DATOS = 'No se pudo conectar con la base de datos.';
 const DOCUMENTO_DUPLICADO = 'Este documento ya está registrado.';
 const CORREO_DUPLICADO = 'Este correo ya está registrado.';
@@ -17,7 +18,7 @@ const normalizarNombre = (valor) => {
 
 const CONSULTA_LOGIN = `
   SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo, u.telefono,
-         u.contrasena, u.estado, u.id_rol,
+         u.contrasena, u.estado, u.id_rol, u.token_activacion,
          r.nombre AS rol, r.estado AS rol_estado
   FROM tb_usuarios u
   JOIN tb_roles r ON r.id_rol = u.id_rol
@@ -147,7 +148,17 @@ export async function login(correo, contrasena) {
   const { rows } = await consultar(CONSULTA_LOGIN, [correo]);
   const usuario = rows[0];
 
-  if (!usuario || !usuario.estado || !usuario.rol_estado || !usuario.contrasena) {
+  if (!usuario) {
+    throw new AppError(CREDENCIALES_INVALIDAS, 401);
+  }
+
+  // Invitación pendiente: la cuenta existe pero su contraseña todavía no está
+  // creada; el empleado debe activarla desde el correo.
+  if (usuario.token_activacion) {
+    throw new AppError(CUENTA_NO_ACTIVADA, 403);
+  }
+
+  if (!usuario.estado || !usuario.rol_estado || !usuario.contrasena) {
     throw new AppError(CREDENCIALES_INVALIDAS, 401);
   }
 
