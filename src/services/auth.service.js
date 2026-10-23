@@ -2,6 +2,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
+import {
+  generarTokenVerificacion,
+  HORAS_VIGENCIA_VERIFICACION,
+} from './verificacion.service.js';
 
 const CREDENCIALES_INVALIDAS = 'Correo o contraseña incorrectos.';
 const CUENTA_NO_ACTIVADA = 'Tu cuenta aún no está activada. Revisa tu correo.';
@@ -246,9 +250,13 @@ const CONSULTA_ROL_CLIENTE = `
   SELECT id_rol FROM tb_roles WHERE nombre = 'Cliente'
 `;
 
+// La cuenta nace PENDIENTE de verificar el correo: hash del token y su
+// vencimiento en las columnas de activación (el login la bloquea mientras
+// token_activacion exista).
 const INSERT_USUARIO = `
-  INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, telefono, id_rol)
-  VALUES ($1, $2, $3, $4, $5, $6, $7)
+  INSERT INTO tb_usuarios (id_usuario, tipo_documento, nombre, correo, contrasena, telefono, id_rol,
+                           token_activacion, token_activacion_expira)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + ($9::int * INTERVAL '1 hour'))
 `;
 
 const INSERT_CLIENTE = `
@@ -303,6 +311,7 @@ export async function registrarCliente(datos) {
   }
 
   const hash = await bcrypt.hash(contrasena, 10);
+  const verificacion = generarTokenVerificacion();
 
   try {
     await transaction(async (client) => {
@@ -314,6 +323,8 @@ export async function registrarCliente(datos) {
         hash,
         telefono,
         rolCliente.id_rol,
+        verificacion.hash,
+        HORAS_VIGENCIA_VERIFICACION,
       ]);
       await client.query(INSERT_CLIENTE, [numeroDocumento]);
     });
@@ -321,6 +332,8 @@ export async function registrarCliente(datos) {
     throw mapearErrorDeBase(error);
   }
 
+  // `verificacion` (token en claro) es solo para el correo: el controlador
+  // nunca lo incluye en la respuesta HTTP.
   return {
     usuario: {
       id: numeroDocumento,
@@ -328,5 +341,6 @@ export async function registrarCliente(datos) {
       correo,
       rol: 'Cliente',
     },
+    verificacion: { token: verificacion.token, vencimiento: verificacion.vencimiento },
   };
 }

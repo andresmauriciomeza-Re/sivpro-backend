@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { query, transaction } from '../config/db.js';
+import { pool, query, transaction } from '../config/db.js';
 import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/produccion.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
@@ -251,14 +251,14 @@ export async function listarOrdenesProduccion(filtros) {
   );
   const ordenes = [];
   for (const row of rows) {
-    const lineas = await cargarLineasOrden(query, Number(row.id_orden_produccion));
+    const lineas = await cargarLineasOrden(pool, Number(row.id_orden_produccion));
     ordenes.push(mapearOrden(row, lineas));
   }
   return ordenes;
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
-  const { orden } = await obtenerOrdenEnConexion(query, idOrden);
+  const { orden } = await obtenerOrdenEnConexion(pool, idOrden);
   return orden;
 }
 
@@ -269,7 +269,7 @@ async function cargarDatosRequeridos(client, idOrden, bloquearInsumos = false) {
 }
 
 export async function obtenerRequeridosOrdenProduccion(idOrden) {
-  const { calculo } = await cargarDatosRequeridos(query, idOrden);
+  const { calculo } = await cargarDatosRequeridos(pool, idOrden);
   return { requeridos: calculo.requeridos, faltantes: calculo.faltantes };
 }
 
@@ -448,14 +448,25 @@ export async function completarOrdenProduccion(idOrden, datos) {
             [linea.id_detalle_op, cantidadReal, merma]
           );
           if (merma > 0) {
+            // Merma como producto no conforme (la pantalla CPN solo recarga).
+            // No mueve stock: al inventario solo entró la cantidad real.
             await client.query(
               `INSERT INTO tb_productos_no_conformes
-                 (tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion,
+                 (fecha_registro, tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion,
                   id_venta, cantidad_afectada, unidad_medida, motivo, descripcion_detallada,
-                  estado, nombre, orden_ref)
-               VALUES ('Producto insumo', NULL, $1, $2, NULL, $3, $4,
-                       'Merma de cocina', NULL, 'Pendiente', $5, $6)`,
-              [linea.id_insumo, idOrden, merma, linea.unidad, linea.nombre, String(idOrden)]
+                  estado, nombre, categoria, area_proceso, orden_ref)
+               VALUES ($1, 'Producto insumo', NULL, $2, $3, NULL, $4, $5,
+                       'Merma de cocina', $6, 'Pendiente', $7, 'Producto insumo', 'Producción', $8)`,
+              [
+                fechaHoraBogota().fecha,
+                linea.id_insumo,
+                idOrden,
+                merma,
+                linea.unidad,
+                `Se planificaron ${linea.cantidad_estimada} ${linea.unidad} y se obtuvieron ${cantidadReal} ${linea.unidad}.`.slice(0, 500),
+                String(linea.nombre ?? '').slice(0, 200),
+                String(idOrden),
+              ]
             );
           }
         }

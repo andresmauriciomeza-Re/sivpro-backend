@@ -556,10 +556,13 @@ export async function resolverDevolucion(idDevolucion, datos) {
       // ── 1. Detalle de lo devuelto, por línea de la venta original ──
       for (const linea of lineas) {
         const { rows: detalle } = await client.query(
-          `SELECT dv.id_detalle_venta, dv.id_venta, dv.precio_unitario
+          `SELECT dv.id_detalle_venta, dv.id_venta, dv.precio_unitario, dv.id_producto, dv.tamano,
+                  p.nombre AS producto_nombre, p.unidad_venta, c.nombre AS categoria_nombre
              FROM tb_detalle_venta dv
+             JOIN tb_productos p ON p.id_producto = dv.id_producto
+             JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
             WHERE dv.id_detalle_venta = $1 AND dv.id_venta = $2
-            FOR UPDATE`,
+            FOR UPDATE OF dv`,
           [linea.idDetalleVenta, dev.id_venta]
         );
         if (!detalle[0]) {
@@ -583,6 +586,32 @@ export async function resolverDevolucion(idDevolucion, datos) {
             linea.tamanoReemplazo,
           ]
         );
+
+        // «Producto malo» = pérdida en venta: queda como producto no conforme
+        // (tipo Venta) en la misma transacción. No mueve stock.
+        if (linea.motivo === 'Producto malo') {
+          const fila = detalle[0];
+          const nombre = fila.tamano ? `${fila.producto_nombre} — ${fila.tamano}` : fila.producto_nombre;
+          await client.query(
+            `INSERT INTO tb_productos_no_conformes
+               (fecha_registro, tipo_no_conformidad, id_producto, id_venta, cantidad_afectada,
+                unidad_medida, motivo, descripcion_detallada, estado, nombre, categoria,
+                area_proceso, venta_ref)
+             VALUES ($1, 'Venta', $2, $3, $4, $5, 'Pérdida en venta', $6, 'Pendiente', $7, $8,
+                     'Ventas', $9)`,
+            [
+              fechaHoraBogota().fecha,
+              fila.id_producto,
+              dev.id_venta,
+              linea.cantidad,
+              fila.unidad_venta,
+              String(linea.descripcionMotivo || `Devolución #${idDevolucion}: producto malo`).slice(0, 500),
+              String(nombre).slice(0, 200),
+              String(fila.categoria_nombre ?? '').slice(0, 100) || null,
+              String(dev.id_venta),
+            ]
+          );
+        }
       }
 
       // ── 2. Venta de reemplazo del canje (lo que recibe el cliente) ──
