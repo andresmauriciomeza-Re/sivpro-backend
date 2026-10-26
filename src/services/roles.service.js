@@ -1,5 +1,6 @@
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
+import { contratoVigenteSql } from '../utils/contratacion.js';
 
 const PRIVILEGIOS_CRUD = ['Ver', 'Crear', 'Editar', 'Eliminar'];
 const PERMISOS_EXCEL = new Set([
@@ -189,7 +190,7 @@ async function contarUsuariosConAccesoTotal(client) {
       SELECT u.id_usuario, er.id_rol
       FROM tb_usuarios u
       JOIN tb_empleado e ON e.id_usuario = u.id_usuario AND e.estado = TRUE
-      JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+      JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
       JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
       JOIN tb_roles r ON r.id_rol = er.id_rol AND r.estado = TRUE
       WHERE u.estado = TRUE

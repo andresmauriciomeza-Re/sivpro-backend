@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import { query, transaction } from '../config/db.js';
+import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarCorreoBienvenida } from './mail.service.js';
 
 const superAdminId = () => String(process.env.SUPER_ADMIN_ID || '').trim();
@@ -31,7 +32,7 @@ const CONSULTA_ADMINISTRADORES_ACTIVOS = `
     ) OR EXISTS (
       SELECT 1
       FROM tb_empleado e
-      JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+      JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
       JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
       JOIN tb_roles r ON r.id_rol = er.id_rol
       WHERE e.id_usuario = u.id_usuario AND LOWER(r.nombre) = 'administrador'
@@ -46,7 +47,7 @@ async function protegerUltimoAdministrador(idObjetivo) {
         SELECT 1 FROM tb_roles r WHERE r.id_rol = u.id_rol AND LOWER(r.nombre) = 'administrador'
       ) OR EXISTS (
         SELECT 1 FROM tb_empleado e
-        JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+        JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
         JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
         JOIN tb_roles r ON r.id_rol = er.id_rol
         WHERE e.id_usuario = u.id_usuario AND LOWER(r.nombre) = 'administrador'
@@ -149,7 +150,7 @@ export async function listarUsuarios() {
            COALESCE((
              SELECT array_agg(DISTINCT rx.nombre ORDER BY rx.nombre)
              FROM tb_empleado e
-             JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+             JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
              JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
              JOIN tb_roles rx ON rx.id_rol = er.id_rol
              WHERE e.id_usuario = u.id_usuario
