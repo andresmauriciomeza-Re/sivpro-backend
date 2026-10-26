@@ -235,6 +235,14 @@ export function validarDatosPersona(body, { telefonoOpcional = false } = {}) {
   if (!/^\d+$/.test(numero) || numero.length < limites.min || numero.length > limites.max) {
     throw new AppError(MENSAJES.numeroDocumento, 400);
   }
+  const contacto = validarNombreCorreoTelefono(datos, { telefonoOpcional });
+  return { tipoDocumento: tipo, numeroDocumento: numero, ...contacto };
+}
+
+/** Nombre, correo y teléfono con las mismas reglas y longitudes que el alta
+ *  (también lo usa la edición de empleados, que no recibe el documento). */
+export function validarNombreCorreoTelefono(body, { telefonoOpcional = false } = {}) {
+  const datos = body || {};
   const nombre = typeof datos.nombre === 'string' ? datos.nombre.trim() : '';
   if (nombre.length < MIN_NOMBRE || nombre.length > MAX_NOMBRE || !REGEX_NOMBRE.test(nombre)) {
     throw new AppError(MENSAJES.nombre, 400);
@@ -242,10 +250,10 @@ export function validarDatosPersona(body, { telefonoOpcional = false } = {}) {
   const correo = validarFormatoCorreo(datos.correo);
   const telefono = typeof datos.telefono === 'string' ? datos.telefono.replace(/\s+/g, '') : '';
   if (!telefono && telefonoOpcional) {
-    return { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono: '' };
+    return { nombre, correo, telefono: '' };
   }
   if (!REGEX_TELEFONO.test(telefono)) throw new AppError(MENSAJES.telefono, 400);
-  return { tipoDocumento: tipo, numeroDocumento: numero, nombre, correo, telefono };
+  return { nombre, correo, telefono };
 }
 
 // Alta administrativa: mismas reglas públicas del registro, sin aceptar una

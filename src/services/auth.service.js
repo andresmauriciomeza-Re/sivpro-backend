@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
+import { contratoVigenteSql } from '../utils/contratacion.js';
 import {
   generarTokenVerificacion,
   HORAS_VIGENCIA_VERIFICACION,
@@ -49,7 +50,7 @@ const PERMISOS_ROL_BASE = `
 const PERMISOS_ROLES_EXTRA = `
   SELECT p.modulo, p.nombre AS permiso, pr.nombre AS privilegio
   FROM tb_empleado e
-  JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+  JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
   JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
   JOIN tb_roles r ON r.id_rol = er.id_rol AND r.estado = TRUE
   JOIN tb_roles_permiso rp ON rp.id_rol = er.id_rol
@@ -67,7 +68,42 @@ async function consultar(sql, params) {
   }
 }
 
-export async function obtenerPermisos(idRol, idUsuario) {
+/**
+ * Rol base con el que realmente entra la cuenta. Un empleado cuya ficha está
+ * inactiva, o que no tiene una contratación vigente, conserva su cuenta pero
+ * pierde el panel: entra como Cliente. No se escribe nada en tb_usuarios; al
+ * reactivarlo o contratarlo de nuevo recupera todo. El super administrador
+ * nunca se evalúa. Una cuenta con rol Empleado SIN ficha en tb_empleado no se toca.
+ */
+export async function rolBaseEfectivo(idRol, idUsuario) {
+  const { rows } = await consultar(
+    `SELECT r.id_rol, r.nombre,
+            (LOWER(TRIM(r.nombre)) = 'empleado') AS es_empleado,
+            EXISTS (SELECT 1 FROM tb_empleado e WHERE e.id_usuario = $2) AS tiene_ficha,
+            EXISTS (
+              SELECT 1 FROM tb_empleado e
+              JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
+              WHERE e.id_usuario = $2 AND e.estado = TRUE
+            ) AS activo
+       FROM tb_roles r
+      WHERE r.id_rol = $1`,
+    [idRol, idUsuario]
+  );
+  const actual = rows[0];
+  const superAdminId = String(process.env.SUPER_ADMIN_ID || '').trim();
+  const esSuperAdmin = Boolean(superAdminId) && String(idUsuario) === superAdminId;
+  if (!actual || !actual.es_empleado || !actual.tiene_ficha || actual.activo || esSuperAdmin) {
+    return { id_rol: idRol, nombre: actual?.nombre };
+  }
+  const { rows: cliente } = await consultar(
+    "SELECT id_rol, nombre FROM tb_roles WHERE LOWER(TRIM(nombre)) = 'cliente' AND estado = TRUE",
+    []
+  );
+  return cliente[0] ?? { id_rol: idRol, nombre: actual.nombre };
+}
+
+export async function obtenerPermisos(idRolCuenta, idUsuario) {
+  const { id_rol: idRol } = await rolBaseEfectivo(idRolCuenta, idUsuario);
   const [base, extra] = await Promise.all([
     consultar(PERMISOS_ROL_BASE, [idRol]),
     consultar(PERMISOS_ROLES_EXTRA, [idUsuario]),
@@ -107,11 +143,12 @@ export async function obtenerPermisosDeRol(idRol) {
   return [...permisos.values()];
 }
 
-async function obtenerRolesAsignados(idRol, idUsuario) {
+async function obtenerRolesAsignados(idRolCuenta, idUsuario) {
+  const { id_rol: idRol } = await rolBaseEfectivo(idRolCuenta, idUsuario);
   const { rows: extras } = await consultar(`
     SELECT DISTINCT r.id_rol, r.nombre
     FROM tb_empleado e
-    JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ce.fecha_final IS NULL
+    JOIN tb_contratacion_empleado ce ON ce.id_empleado = e.id_empleado AND ${contratoVigenteSql('ce')}
     JOIN tb_empleado_roles er ON er.id_contrato = ce.id_contrato
     JOIN tb_roles r ON r.id_rol = er.id_rol AND r.estado = TRUE
     WHERE e.id_usuario = $1 AND e.estado = TRUE
@@ -179,6 +216,7 @@ export async function login(correo, contrasena) {
 
   const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
   const roles = await obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario);
+  usuario.rol = (await rolBaseEfectivo(usuario.id_rol, usuario.id_usuario)).nombre ?? usuario.rol;
 
   const token = jwt.sign(
     { sub: usuario.id_usuario, rol: usuario.rol },
@@ -205,6 +243,7 @@ export async function obtenerUsuarioPorId(idUsuario) {
 
   const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
   const roles = await obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario);
+  usuario.rol = (await rolBaseEfectivo(usuario.id_rol, usuario.id_usuario)).nombre ?? usuario.rol;
   return armarUsuario(usuario, permisos, roles);
 }
 
