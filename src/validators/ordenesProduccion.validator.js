@@ -50,18 +50,44 @@ export function validarIdOrdenProduccion(valor) {
   return enteroPositivo(valor, 'id_orden_produccion');
 }
 
+function idOpcional(valor, campo, indice) {
+  if (valor == null || valor === '') return null;
+  return enteroPositivo(valor, `lineas[${indice}].${campo}`);
+}
+
+/** Cada línea lleva un producto insumo (id_insumo) o un producto del menú
+ *  (id_producto). El frontend de "cantidad inicial" manda el id del producto
+ *  creado por el campo id_insumo: el servicio resuelve hacia qué tabla apunta,
+ *  así que aquí sólo se exige que venga UNO de los dos. */
 export function validarLineasPreparacion(valor) {
   if (!Array.isArray(valor) || valor.length === 0) {
     throw new AppError('La preparación debe incluir al menos una línea.', 400);
   }
   const vistos = new Set();
   return valor.map((linea, indice) => {
-    const id_insumo = enteroPositivo(linea?.id_insumo, `lineas[${indice}].id_insumo`);
-    if (vistos.has(id_insumo)) throw new AppError('No repitas productos insumo en las líneas.', 400);
-    vistos.add(id_insumo);
+    const id_insumo = idOpcional(linea?.id_insumo, 'id_insumo', indice);
+    const id_producto = idOpcional(linea?.id_producto, 'id_producto', indice);
+    if (id_insumo == null && id_producto == null) {
+      throw new AppError(`La línea ${indice + 1} debe incluir id_insumo o id_producto.`, 400);
+    }
+    if (id_insumo != null && id_producto != null) {
+      throw new AppError(`La línea ${indice + 1} no puede llevar id_insumo e id_producto a la vez.`, 400);
+    }
+    const clave = id_producto != null ? `producto:${id_producto}` : `insumo:${id_insumo}`;
+    if (vistos.has(clave)) {
+      throw new AppError(
+        id_producto != null ? 'No repitas productos en las líneas.' : 'No repitas productos insumo en las líneas.',
+        400
+      );
+    }
+    vistos.add(clave);
     const cantidad = numero(linea?.cantidad, `lineas[${indice}].cantidad`);
     if (cantidad <= 0) throw new AppError(`La cantidad de la línea ${indice + 1} debe ser mayor que cero.`, 400);
-    return { id_insumo, cantidad };
+    // tb_productos.stock es entero: una línea de producto sólo acepta unidades.
+    if (id_producto != null && !Number.isSafeInteger(cantidad)) {
+      throw new AppError(`La cantidad de la línea ${indice + 1} debe ser un número entero.`, 400);
+    }
+    return { id_insumo, id_producto, cantidad };
   });
 }
 

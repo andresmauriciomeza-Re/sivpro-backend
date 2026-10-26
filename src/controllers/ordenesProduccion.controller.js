@@ -17,13 +17,7 @@ import {
   validarFiltrosOrdenesProduccion,
   validarIdOrdenProduccion,
 } from '../validators/ordenesProduccion.validator.js';
-
-function responderConFaltantes(error, res, next) {
-  if (!error.faltantes) return next(error);
-  return res.status(error.statusCode).json({
-    error: { message: error.message, statusCode: error.statusCode, faltantes: error.faltantes },
-  });
-}
+import responderConFaltantes from '../utils/responderConFaltantes.js';
 
 export async function listarOrdenesProduccionController(req, res, next) {
   try {

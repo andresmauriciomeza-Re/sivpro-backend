@@ -6,7 +6,9 @@ import { MOTIVO_MERMA } from '../validators/productosNoConformes.validator.js';
 // Productos No Conformes (tb_productos_no_conformes).
 // Registros MANUALES (tipo Producto / Producto insumo) mueven stock en la misma
 // transacción: un producto de Reventa baja tb_productos.stock y un insumo baja
-// tb_insumo.stock_actual (los Elaborados no tienen stock propio). Si la
+// tb_insumo.stock_actual. Los 'Elaborado' sí tienen stock propio (las
+// pre-hechas de pizzas/lasañas) pero un registro manual NO lo mueve: esas
+// unidades las mueven la preparación, la venta y el pedido. Si la
 // cantidad supera el stock se rechaza, así al eliminar (solo Pendiente) se
 // devuelve exactamente cantidad_afectada.
 // Registros del SISTEMA: la merma de Orden de Producción (motivo «Merma de
