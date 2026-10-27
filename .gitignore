@@ -5,4 +5,4 @@ coverage/
 
 # Variables de entorno
 .env
-
+.env.example
