@@ -43,7 +43,7 @@ export async function actualizarProveedorController(req, res, next) {
   try {
     const id = validarIdProveedor(req.params.id);
     const actual = await obtenerProveedor(id);
-    const datos = validarEditarProveedor(req.body, actual.tipo_persona);
+    const datos = validarEditarProveedor(req.body, actual);
     res.json(await actualizarProveedor(id, datos));
   } catch (error) {
     next(error);
