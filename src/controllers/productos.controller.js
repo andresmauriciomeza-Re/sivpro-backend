@@ -1,4 +1,5 @@
 import { query } from '../config/db.js';
+import AppError from '../errors/AppError.js';
 import {
   cambiarEstadoProducto,
   crearProducto,
@@ -20,6 +21,7 @@ export async function obtenerCatalogoPublico(req, res, next) {
     const { rows } = await query(
       `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo,
               p.precio_venta, p.unidad_venta, p.imagen, p.estado,
+              p.imagen_data IS NOT NULL AS tiene_imagen,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
               c.emoji AS categoria_emoji, p.stock, p.precio_grande
          FROM tb_productos p
@@ -53,6 +55,7 @@ export async function obtenerProductosGestion(req, res, next) {
       `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo,
               p.precio_venta, p.costo_unitario, p.unidad_venta, p.stock,
               p.imagen, p.estado,
+              p.imagen_data IS NOT NULL AS tiene_imagen,
               p.contenido, p.contenido_unidad, p.unidad_compra,
               p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
@@ -63,6 +66,33 @@ export async function obtenerProductosGestion(req, res, next) {
         ORDER BY c.id_categoria, p.id_producto`
     );
     res.json(rows);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** Imagen binaria de un producto (GET /productos/:id/imagen).
+    Pensada para el catálogo público: NO pide autenticación, solo sirve los
+    bytes que guardó `scripts/cargar-imagenes.js` en `imagen_data`.
+    `imagen_data` NUNCA viaja en los JSON del catálogo (eso lo satura); el
+    listado solo informa `tiene_imagen` y el frontend pide la imagen acá.
+    Se cachea 1 hora: los bytes de un producto no cambian con frecuencia. */
+export async function obtenerImagenProducto(req, res, next) {
+  try {
+    const id = validarIdProducto(req.params.id);
+    const { rows } = await query(
+      `SELECT imagen_data, imagen_tipo
+         FROM tb_productos
+        WHERE id_producto = $1`,
+      [id]
+    );
+    const producto = rows[0];
+    if (!producto) throw new AppError('Producto no encontrado.', 404);
+    if (!producto.imagen_data) throw new AppError('El producto no tiene imagen.', 404);
+
+    res.set('Content-Type', producto.imagen_tipo || 'application/octet-stream');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(producto.imagen_data);
   } catch (error) {
     next(error);
   }
