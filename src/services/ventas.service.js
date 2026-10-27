@@ -349,7 +349,8 @@ const porcentajeReembolso = (motivo) => (motivo === 'Cliente canceló el pedido'
  *    sus pagos como 'Rechazado'.
  * 3. si la venta ya estaba "Por entregar", cancela su orden de producción
  *    (estado 'Cancelada' con fecha_cancelada) y le devuelve al stock las
- *    bebidas que esa orden había descontado.
+ *    bebidas que esa orden había descontado, y los elaborados (pre-hechas)
+ *    sólo si esa orden descontó stock (productos_descontados).
  */
 export async function anularVenta(idVenta, datos) {
   try {

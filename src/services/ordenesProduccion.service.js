@@ -120,40 +120,171 @@ function validarFechaNoPasada(fecha) {
   if (fecha < fechaHoraBogota().fecha) throw new AppError('La fecha solicitada no puede ser pasada.', 400);
 }
 
-async function validarLineasPreparacion(client, lineas) {
-  const ids = lineas.map((linea) => linea.id_insumo);
-  const { rows } = await client.query(
-    `SELECT id_insumo, nombre, tipo, unidad_medida, estado
-       FROM tb_insumo
-      WHERE id_insumo = ANY($1::integer[])
-      ORDER BY id_insumo
-      FOR UPDATE`,
-    [ids]
-  );
-  if (rows.length !== ids.length) throw new AppError('Uno o más productos insumo no existen.', 400);
-  const porId = new Map(rows.map((row) => [Number(row.id_insumo), row]));
-  for (const id of ids) {
-    const actual = porId.get(id);
-    if (actual.tipo !== 'Producto insumo' || !actual.estado) {
-      throw new AppError(`«${actual.nombre}» debe ser un Producto insumo activo.`, 400);
+/** Líneas que participan en el cálculo y en el descuento de insumos: los
+ *  productos insumo y los productos del menú que SÍ tienen ficha técnica.
+ *  Un producto sin ficha es una línea "solo stock": no existe receta que
+ *  descontar, así que no exige ingredientes y sólo mueve tb_productos.stock
+ *  cuando la orden se completa. Se identifica porque su detalle se guarda con
+ *  id_ft = NULL. */
+const participaEnInsumos = (linea) => linea.id_insumo != null || linea.id_ft != null;
+
+/**
+ * Resuelve cada línea de la entrada a producto insumo o a producto 'Elaborado'
+ * del menú. tb_insumo y tb_productos comparten rango de ids (hoy chocan siete
+ * productos), así que la regla es:
+ *   1. id_producto explícito → siempre el producto.
+ *   2. id_insumo que existe como 'Producto insumo' → insumo (mantiene la
+ *      pantalla de Órdenes tal cual funciona hoy).
+ *   3. cualquier otro caso, si existe un producto con ese id → producto
+ *      'Elaborado' (es como el frontend manda la cantidad inicial).
+ */
+async function resolverLineas(client, lineas) {
+  const idsInsumo = [...new Set(lineas.map((linea) => linea.id_insumo).filter((id) => id != null))];
+  const idsProducto = [...new Set(lineas.map((linea) => linea.id_producto).filter((id) => id != null))];
+
+  const insumos = new Map();
+  if (idsInsumo.length) {
+    const { rows } = await client.query(
+      `SELECT id_insumo, nombre, tipo, unidad_medida, estado
+         FROM tb_insumo
+        WHERE id_insumo = ANY($1::integer[])
+        ORDER BY id_insumo
+        FOR UPDATE`,
+      [idsInsumo]
+    );
+    for (const row of rows) insumos.set(Number(row.id_insumo), row);
+  }
+
+  const candidatosProducto = new Set(idsProducto);
+  for (const id of idsInsumo) {
+    const insumo = insumos.get(id);
+    if (!insumo || insumo.tipo !== 'Producto insumo') candidatosProducto.add(id);
+  }
+
+  const productos = new Map();
+  const idsCandidatos = [...candidatosProducto].sort((a, b) => a - b);
+  if (idsCandidatos.length) {
+    const { rows } = await client.query(
+      `SELECT id_producto, nombre, tipo, unidad_venta, estado
+         FROM tb_productos
+        WHERE id_producto = ANY($1::integer[])
+        ORDER BY id_producto`,
+      [idsCandidatos]
+    );
+    for (const row of rows) productos.set(Number(row.id_producto), row);
+  }
+
+  const pendientesInsumo = [];
+  const pendientesProducto = [];
+  const resueltas = new Array(lineas.length);
+  for (let indice = 0; indice < lineas.length; indice += 1) {
+    const linea = lineas[indice];
+    const id = linea.id_producto ?? linea.id_insumo;
+    if (linea.id_producto == null) {
+      const insumo = insumos.get(id);
+      if (insumo?.tipo === 'Producto insumo') {
+        if (!insumo.estado) throw new AppError(`«${insumo.nombre}» debe ser un Producto insumo activo.`, 400);
+        pendientesInsumo.push({ indice, linea, insumo });
+        continue;
+      }
+    }
+    const producto = productos.get(id);
+    if (producto) {
+      if (producto.tipo !== 'Elaborado') {
+        throw new AppError(`«${producto.nombre}» debe ser un producto Elaborado.`, 400);
+      }
+      pendientesProducto.push({ indice, linea, producto });
+      continue;
+    }
+    if (linea.id_producto != null) throw new AppError(`El producto ${id} no existe.`, 400);
+    const insumo = insumos.get(id);
+    if (insumo) throw new AppError(`«${insumo.nombre}» debe ser un Producto insumo activo.`, 400);
+    throw new AppError('Uno o más productos insumo no existen.', 400);
+  }
+
+  // Ficha vigente del insumo: obligatoria (igual que siempre).
+  const idsInsumoFicha = pendientesInsumo.map((pendiente) => pendiente.linea.id_insumo);
+  const fichaPorInsumo = new Map();
+  if (idsInsumoFicha.length) {
+    const { rows } = await client.query(
+      `SELECT id_ft, id_insumo
+         FROM tb_ficha_tecnica
+        WHERE id_insumo = ANY($1::integer[]) AND fecha_final IS NULL
+        ORDER BY id_insumo, version DESC`,
+      [idsInsumoFicha]
+    );
+    for (const ficha of rows) {
+      if (!fichaPorInsumo.has(Number(ficha.id_insumo))) fichaPorInsumo.set(Number(ficha.id_insumo), Number(ficha.id_ft));
     }
   }
-  const { rows: fichas } = await client.query(
-    `SELECT id_ft, id_insumo
-       FROM tb_ficha_tecnica
-      WHERE id_insumo = ANY($1::integer[]) AND fecha_final IS NULL
-      ORDER BY id_insumo, version DESC`,
-    [ids]
-  );
-  const fichaPorInsumo = new Map();
-  for (const ficha of fichas) {
-    if (!fichaPorInsumo.has(Number(ficha.id_insumo))) fichaPorInsumo.set(Number(ficha.id_insumo), Number(ficha.id_ft));
-  }
-  return lineas.map((linea) => {
+  for (const pendiente of pendientesInsumo) {
+    const { indice, linea, insumo } = pendiente;
     const ficha = fichaPorInsumo.get(linea.id_insumo);
-    if (!ficha) throw new AppError(`«${porId.get(linea.id_insumo).nombre}» no tiene ficha técnica vigente.`, 400);
-    return { ...linea, id_ft: ficha, unidad: porId.get(linea.id_insumo).unidad_medida, nombre: porId.get(linea.id_insumo).nombre };
-  });
+    if (!ficha) throw new AppError(`«${insumo.nombre}» no tiene ficha técnica vigente.`, 400);
+    resueltas[indice] = {
+      id_insumo: insumo.id_insumo,
+      id_producto: null,
+      id_ft: ficha,
+      cantidad_estimada: Number(linea.cantidad),
+      tamano: null,
+      unidad: insumo.unidad_medida,
+      nombre: insumo.nombre,
+    };
+  }
+
+  // Ficha vigente del producto: OPCIONAL (si no hay, la línea es "solo stock").
+  const idsProductoFicha = pendientesProducto.map((pendiente) => pendiente.linea.id_producto ?? pendiente.linea.id_insumo);
+  const fichaPorProducto = new Map();
+  if (idsProductoFicha.length) {
+    const { rows } = await client.query(
+      `SELECT id_ft, id_producto
+         FROM tb_ficha_tecnica
+        WHERE id_producto = ANY($1::integer[]) AND fecha_final IS NULL
+        ORDER BY id_producto, version DESC`,
+      [idsProductoFicha]
+    );
+    for (const ficha of rows) {
+      if (!fichaPorProducto.has(Number(ficha.id_producto))) fichaPorProducto.set(Number(ficha.id_producto), Number(ficha.id_ft));
+    }
+  }
+  for (const pendiente of pendientesProducto) {
+    const { indice, linea, producto } = pendiente;
+    const idProducto = producto.id_producto;
+    resueltas[indice] = {
+      id_insumo: null,
+      id_producto: idProducto,
+      id_ft: fichaPorProducto.get(Number(idProducto)) ?? null,
+      cantidad_estimada: Number(linea.cantidad),
+      tamano: null,
+      unidad: producto.unidad_venta || 'und',
+      nombre: producto.nombre,
+    };
+  }
+
+  return resueltas;
+}
+
+/** Valida las líneas, calcula los insumos requeridos (sólo de las líneas que
+ *  tienen receta) y devuelve además las filas de detalle a insertar, en el
+ *  MISMO orden en que llegaron las líneas. */
+async function prepararLineas(client, lineasEntrada, { bloquearInsumos = false } = {}) {
+  const resueltas = await resolverLineas(client, lineasEntrada);
+  const calculo = await calcularRequeridosProduccion(
+    client,
+    resueltas.filter(participaEnInsumos),
+    { bloquearInsumos }
+  );
+  const detalle = [];
+  let proximaReceta = 0;
+  for (const linea of resueltas) {
+    if (participaEnInsumos(linea) && proximaReceta < calculo.recetas.length) {
+      detalle.push(calculo.recetas[proximaReceta]);
+      proximaReceta += 1;
+    } else {
+      detalle.push(linea);
+    }
+  }
+  return { calculo, detalle };
 }
 
 function lanzarErrorFaltantes(faltantes, mensaje) {
@@ -170,14 +301,25 @@ function detalleHistoria(historial, cambio) {
   return lista;
 }
 
+/** Inserta las líneas de detalle: cada fila lleva exactamente uno de
+ *  id_insumo / id_producto (ck_dop_item) y siempre unidad y nombre. */
 async function insertarDetallesPreparacion(client, idOrden, recetas) {
   for (const receta of recetas) {
     await client.query(
       `INSERT INTO tb_detalle_orden_produccion
          (id_orden_produccion, id_producto, id_insumo, id_ft,
           cantidad_estimada, unidad, nombre, tamano)
-       VALUES ($1, NULL, $2, $3, $4, $5, $6, NULL)`,
-      [idOrden, receta.id_insumo, receta.id_ft, receta.cantidad_estimada, receta.unidad, receta.nombre]
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        idOrden,
+        receta.id_producto ?? null,
+        receta.id_insumo ?? null,
+        receta.id_ft ?? null,
+        receta.cantidad_estimada,
+        receta.unidad || 'und',
+        receta.nombre,
+        receta.tamano ?? null,
+      ]
     );
   }
 }
@@ -185,8 +327,7 @@ async function insertarDetallesPreparacion(client, idOrden, recetas) {
 /** Comparte creación transaccional para POST /ordenes-produccion y alta desde Insumos. */
 export async function crearPreparacionEnTransaccion(client, datos, detalleInicial = null) {
   validarFechaNoPasada(datos.fecha_solicitada);
-  const lineasValidadas = await validarLineasPreparacion(client, datos.lineas);
-  const calculo = await calcularRequeridosProduccion(client, lineasValidadas, { bloquearInsumos: true });
+  const { calculo, detalle } = await prepararLineas(client, datos.lineas, { bloquearInsumos: true });
   lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
 
   const momento = fechaHoraBogota();
@@ -211,7 +352,7 @@ export async function crearPreparacionEnTransaccion(client, datos, detalleInicia
     ]
   );
   const idOrden = Number(rows[0].id_orden_produccion);
-  await insertarDetallesPreparacion(client, idOrden, calculo.recetas);
+  await insertarDetallesPreparacion(client, idOrden, detalle);
   return { id_orden_produccion: idOrden };
 }
 
@@ -264,7 +405,9 @@ export async function obtenerOrdenProduccion(idOrden) {
 
 async function cargarDatosRequeridos(client, idOrden, bloquearInsumos = false) {
   const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden);
-  const calculo = await calcularRequeridosProduccion(client, lineas, { bloquearInsumos });
+  // Las líneas sin receta (productos sin ficha y las de un pedido, que es
+  // calentamiento) no consumen insumos: no tienen nada que mostrar aquí.
+  const calculo = await calcularRequeridosProduccion(client, lineas.filter(participaEnInsumos), { bloquearInsumos });
   return { row, lineas, calculo };
 }
 
@@ -296,13 +439,16 @@ export async function actualizarOrdenProduccion(idOrden, datos) {
       validarFechaNoPasada(fechaSolicitada);
       const horaSolicitada = datos.hora_solicitada !== undefined ? datos.hora_solicitada : row.hora_solicitada;
       const observacion = datos.observacion !== undefined ? datos.observacion : row.observacion;
-      const lineasEntrada = datos.lineas ?? lineas.map((linea) => ({ id_insumo: linea.id_insumo, cantidad: linea.cantidad_estimada }));
-      const lineasValidadas = await validarLineasPreparacion(client, lineasEntrada);
-      const calculo = await calcularRequeridosProduccion(client, lineasValidadas, { bloquearInsumos: true });
+      const lineasEntrada = datos.lineas ?? lineas.map((linea) => ({
+        id_insumo: linea.id_insumo,
+        id_producto: linea.id_producto,
+        cantidad: linea.cantidad_estimada,
+      }));
+      const { calculo, detalle } = await prepararLineas(client, lineasEntrada, { bloquearInsumos: true });
       lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
 
       await client.query('DELETE FROM tb_detalle_orden_produccion WHERE id_orden_produccion = $1', [idOrden]);
-      await insertarDetallesPreparacion(client, idOrden, calculo.recetas);
+      await insertarDetallesPreparacion(client, idOrden, detalle);
       await client.query(
         `UPDATE tb_orden_produccion
             SET fecha_solicitada = $2, hora_solicitada = $3, observacion = $4,
@@ -375,11 +521,19 @@ export async function iniciarOrdenProduccion(idOrden) {
     return await transaction(async (client) => {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
       if (row.estado !== ESTADO_PENDIENTE) throw new AppError('Solo se pueden iniciar órdenes Pendientes.', 409);
-      const calculo = await descontarInsumos(client, lineas);
+      // Un 'Pedido' es un encargo de CALENTAMIENTO: sus productos elaborados ya
+      // descontaron sus insumos cuando esas unidades se hornearon, así que la
+      // fase de descuento no aplica. La marca queda en TRUE para que nadie
+      // (completar incluido) intente descontar insumos después.
+      const esPedido = row.tipo === TIPO_PEDIDO;
+      const calculo = esPedido
+        ? { requeridos: parsearArray(row.insumos_requeridos) }
+        : await descontarInsumos(client, lineas.filter(participaEnInsumos));
       const historial = detalleHistoria(row.historial, {
         de: ESTADO_PENDIENTE,
         a: ESTADO_EN_PROCESO,
         fechaHora: fechaHoraBogota().timestamp,
+        ...(esPedido ? { detalle: 'Pedido (calentamiento): sin descuento de insumos.' } : {}),
       });
       await client.query(
         `UPDATE tb_orden_produccion
@@ -407,6 +561,18 @@ async function descontarSiHaceFalta(client, row, lineas) {
   return calculo;
 }
 
+/** Categoría de un producto del menú para el registro de merma (Pizza, Lasaña…). */
+async function categoriaDeProducto(client, idProducto) {
+  const { rows } = await client.query(
+    `SELECT c.nombre
+       FROM tb_productos p
+       JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+      WHERE p.id_producto = $1`,
+    [idProducto]
+  );
+  return String(rows[0]?.nombre ?? '').slice(0, 100) || null;
+}
+
 export async function completarOrdenProduccion(idOrden, datos) {
   try {
     return await transaction(async (client) => {
@@ -427,19 +593,33 @@ export async function completarOrdenProduccion(idOrden, datos) {
         throw new AppError('Tipo de orden no soportado.', 409);
       }
 
-      if (!row.insumos_descontados) await descontarSiHaceFalta(client, row, lineas);
+      // El insumo sólo se descuenta en preparaciones: un pedido ya descontó
+      // (o no aplica) y nunca vuelve a tocar inventario al completarse.
+      if (row.tipo === TIPO_PREPARACION && !row.insumos_descontados) {
+        await descontarSiHaceFalta(client, row, lineas.filter(participaEnInsumos));
+      }
 
       if (row.tipo === TIPO_PREPARACION && !row.stock_aplicado) {
         const cantidades = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea.cantidad_real]));
         for (const linea of lineas) {
           const cantidadReal = cantidades.get(linea.id_detalle_op);
           const merma = Math.max(0, linea.cantidad_estimada - cantidadReal);
-          const { rowCount } = await client.query(
-            `UPDATE tb_insumo
-                SET stock_actual = stock_actual + $2
-              WHERE id_insumo = $1 AND tipo = 'Producto insumo'`,
-            [linea.id_insumo, cantidadReal]
-          );
+          // Preparación con línea de producto: lo producido entra como
+          // pre-hechas de ese producto del menú (tb_productos.stock).
+          const esProducto = linea.id_producto != null;
+          const { rowCount } = esProducto
+            ? await client.query(
+                `UPDATE tb_productos
+                    SET stock = stock + ROUND($2::numeric)::int
+                  WHERE id_producto = $1 AND tipo = 'Elaborado'`,
+                [linea.id_producto, cantidadReal]
+              )
+            : await client.query(
+                `UPDATE tb_insumo
+                    SET stock_actual = stock_actual + $2
+                  WHERE id_insumo = $1 AND tipo = 'Producto insumo'`,
+                [linea.id_insumo, cantidadReal]
+              );
           if (!rowCount) throw new AppError(`No se pudo actualizar el stock de «${linea.nombre}».`, 409);
           await client.query(
             `UPDATE tb_detalle_orden_produccion
@@ -449,22 +629,30 @@ export async function completarOrdenProduccion(idOrden, datos) {
           );
           if (merma > 0) {
             // Merma como producto no conforme (la pantalla CPN solo recarga).
-            // No mueve stock: al inventario solo entró la cantidad real.
+            // No mueve stock: al inventario solo entró la cantidad real. Es un
+            // registro del sistema (motivo «Merma de cocina» + orden enlazada),
+            // así que no se puede borrar desde el módulo CPN.
+            const categoria = esProducto
+              ? await categoriaDeProducto(client, linea.id_producto)
+              : 'Producto insumo';
             await client.query(
               `INSERT INTO tb_productos_no_conformes
                  (fecha_registro, tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion,
                   id_venta, cantidad_afectada, unidad_medida, motivo, descripcion_detallada,
                   estado, nombre, categoria, area_proceso, orden_ref)
-               VALUES ($1, 'Producto insumo', NULL, $2, $3, NULL, $4, $5,
-                       'Merma de cocina', $6, 'Pendiente', $7, 'Producto insumo', 'Producción', $8)`,
+               VALUES ($1, $2, $3, $4, $5, NULL, $6, $7,
+                       'Merma de cocina', $8, 'Pendiente', $9, $10, 'Producción', $11)`,
               [
                 fechaHoraBogota().fecha,
+                esProducto ? 'Producto' : 'Producto insumo',
+                linea.id_producto,
                 linea.id_insumo,
                 idOrden,
                 merma,
                 linea.unidad,
                 `Se planificaron ${linea.cantidad_estimada} ${linea.unidad} y se obtuvieron ${cantidadReal} ${linea.unidad}.`.slice(0, 500),
                 String(linea.nombre ?? '').slice(0, 200),
+                categoria,
                 String(idOrden),
               ]
             );

@@ -17,6 +17,7 @@ import {
   validarCrearVenta,
   validarVerificacion,
 } from '../validators/ventas.validator.js';
+import responderConFaltantes from '../utils/responderConFaltantes.js';
 
 function idNumerico(valor) {
   const id = Number(valor);
@@ -65,7 +66,10 @@ export async function verificarVentaController(req, res, next) {
   try {
     const resultado = await verificarVenta(idNumerico(req.params.id), validarVerificacion(req.body));
     res.json(resultado);
-  } catch (error) { next(error); }
+  } catch (error) {
+    // Al aceptar puede rechazarse con 409 + faltantes de stock de pre-hechas.
+    responderConFaltantes(error, res, next);
+  }
 }
 
 export async function anularVentaController(req, res, next) {
