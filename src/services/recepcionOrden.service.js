@@ -8,18 +8,21 @@ function claveItem(item) {
   return `n:${item.nombre}`;
 }
 
-export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra) {
+export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra, { bloquear = false } = {}) {
+  const clausulaBloqueo = bloquear ? 'FOR UPDATE' : '';
   const { rows: ordenes } = await client.query(
     `SELECT id_dorcompra, id_insumo, id_producto, cantidad, medida, nombre
        FROM tb_detalleordencompra
       WHERE id_ocompra = $1
-      ORDER BY id_dorcompra`,
+      ORDER BY id_dorcompra
+      ${clausulaBloqueo}`,
     [idOrdenCompra]
   );
   const { rows: compras } = await client.query(
     `SELECT id_compra FROM tb_compras
       WHERE id_ocompra = $1 AND estado = 'Recibido'
-      ORDER BY id_compra`,
+      ORDER BY id_compra
+      ${clausulaBloqueo}`,
     [idOrdenCompra]
   );
   const idCompras = compras.map((compra) => Number(compra.id_compra));
@@ -62,8 +65,10 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra) {
     const idInsumo = orden.id_insumo == null ? null : Number(orden.id_insumo);
     const idProducto = orden.id_producto == null ? null : Number(orden.id_producto);
     const solicitado = Number(orden.cantidad);
+    const listaRecibidos = recibidosPorItem.get(claveItem({ id_insumo: idInsumo, id_producto: idProducto })) || [];
+    const facturado = listaRecibidos.length > 0;
     let recibida = 0;
-    for (const detalle of recibidosPorItem.get(claveItem({ id_insumo: idInsumo, id_producto: idProducto })) || []) {
+    for (const detalle of listaRecibidos) {
       try {
         recibida += convertirCantidadCompra(detalle.cantidad, detalle.medida, orden.medida, detalle.nombre || orden.nombre);
       } catch (error) {
@@ -71,7 +76,7 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra) {
         throw new AppError('No se pudo convertir la unidad recibida para la orden.', 400);
       }
     }
-    const pendiente = Math.max(0, solicitado - recibida);
+    const pendiente = facturado ? 0 : solicitado;
     return {
       id_insumo: idInsumo,
       id_producto: idProducto,
@@ -79,6 +84,7 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra) {
       solicitada: solicitado,
       recibida: Number(recibida.toFixed(6)),
       pendiente: Number(pendiente.toFixed(6)),
+      facturado,
       unidad: orden.medida,
     };
   });
@@ -98,5 +104,5 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra) {
      ON CONFLICT (id_ocompra) DO UPDATE SET recepcion = EXCLUDED.recepcion`,
     [idOrdenCompra, JSON.stringify(recepcion)]
   );
-  return { recepcion, completado: items.every((item) => item.pendiente === 0) };
+  return { recepcion, completado: items.length > 0 && items.every((item) => item.facturado) };
 }

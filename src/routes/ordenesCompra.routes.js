@@ -6,6 +6,7 @@ import {
   actualizarOrdenCompraController,
   cambiarEstadoOrdenCompraController,
   crearOrdenCompraController,
+  eliminarOrdenCompraController,
   listarOrdenesCompraController,
   obtenerOrdenCompraController,
   recibirOrdenCompraController,
@@ -28,6 +29,7 @@ router.get('/ordenes-compra/:id', verificarToken, permisoLectura, obtenerOrdenCo
 router.post('/ordenes-compra', verificarToken, permisoOrdenCompra('Crear'), crearOrdenCompraController);
 router.put('/ordenes-compra/:id', verificarToken, permisoOrdenCompra('Editar'), actualizarOrdenCompraController);
 router.patch('/ordenes-compra/:id/estado', verificarToken, permisoOrdenCompra('Editar'), cambiarEstadoOrdenCompraController);
+router.delete('/ordenes-compra/:id', verificarToken, permisoOrdenCompra('Eliminar'), eliminarOrdenCompraController);
 router.post(
   '/ordenes-compra/:id/recepcion',
   verificarToken,

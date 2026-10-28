@@ -2,6 +2,7 @@ import {
   actualizarOrdenCompra,
   cambiarEstadoOrdenCompra,
   crearOrdenCompra,
+  eliminarOrdenCompra,
   listarOrdenesCompra,
   obtenerOrdenCompra,
   recibirOrdenCompra,
@@ -50,6 +51,14 @@ export async function actualizarOrdenCompraController(req, res, next) {
 export async function cambiarEstadoOrdenCompraController(req, res, next) {
   try {
     res.json(await cambiarEstadoOrdenCompra(validarIdOrdenCompra(req.params.id), validarEstadoOrdenCompra(req.body)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function eliminarOrdenCompraController(req, res, next) {
+  try {
+    res.json(await eliminarOrdenCompra(validarIdOrdenCompra(req.params.id)));
   } catch (error) {
     next(error);
   }
