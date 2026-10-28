@@ -7,6 +7,7 @@ import {
   editarProductoController,
   obtenerCatalogoPublico,
   obtenerCategoriasPublicas,
+  obtenerImagenProducto,
   obtenerProductosGestion,
   registrarEntradaCompraController,
   revertirCompraController,
@@ -15,6 +16,8 @@ import {
 const router = Router();
 
 router.get('/productos', obtenerCatalogoPublico);
+// Pública (sin verificarToken): el menú/landing muestra las imágenes sin sesión.
+router.get('/productos/:id/imagen', obtenerImagenProducto);
 router.get('/categorias-productos', obtenerCategoriasPublicas);
 router.get(
   '/productos/gestion',

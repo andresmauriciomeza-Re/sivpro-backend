@@ -10,8 +10,11 @@ export const CATEGORIAS_FIJAS = [1, 2, 3];
 const MAX_NOMBRE = 50;
 const MAX_EMOJI = 50;
 const MAX_DESCRIPCION = 255;
-// Clave "img:…" del catálogo de imágenes del frontend (imagenesCategoria.ts).
-const FORMATO_ICONO = /^img:[a-z0-9-]+$/;
+
+// El ícono SIEMPRE es un emoji real: \p{Extended_Pictographic} (🍕 🥖 🍗),
+// con selectores de variación FE0E/FE0F (❤️) y ZWJ (👨‍🍳). No caben letras,
+// números ni espacios, aunque estén pegados a un emoji.
+const ES_EMOJI = /^\p{Extended_Pictographic}[\u{FE0E}\u{FE0F}]?(?:\u{200D}\p{Extended_Pictographic}[\u{FE0E}\u{FE0F}]?)*$/u;
 
 const CAMPOS = ['nombre', 'emoji', 'descripcion', 'estado'];
 
@@ -49,8 +52,8 @@ function nombre(valor) {
 }
 
 function icono(valor) {
-  if (typeof valor !== 'string' || valor.length > MAX_EMOJI || !FORMATO_ICONO.test(valor)) {
-    throw new AppError('Selecciona una imagen válida.', 400);
+  if (typeof valor !== 'string' || valor.length > MAX_EMOJI || !ES_EMOJI.test(valor)) {
+    throw new AppError('Selecciona un ícono válido.', 400);
   }
   return valor;
 }
