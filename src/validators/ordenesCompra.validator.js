@@ -89,9 +89,6 @@ export function validarEditarOrdenCompra(body) {
 export function validarEstadoOrdenCompra(body) {
   const estado = body?.estado;
   if (!ESTADOS.includes(estado)) throw new AppError('El estado de la orden de compra no es válido.', 400);
-  if (estado === 'Completado') {
-    throw new AppError('El estado Completado lo asigna automáticamente el sistema al completar la recepción.', 400);
-  }
   const motivo = body?.motivo == null || body.motivo === '' ? null : String(body.motivo).trim();
   if (motivo != null && motivo.length > 500) throw new AppError('El motivo no puede superar 500 caracteres.', 400);
   if (estado === 'Anulado' && !motivo) throw new AppError('El motivo es obligatorio para anular la orden de compra.', 400);

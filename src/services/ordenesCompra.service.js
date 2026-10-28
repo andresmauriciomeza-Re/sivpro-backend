@@ -7,7 +7,7 @@ import { recalcularRecepcionEnTransaccion } from './recepcionOrden.service.js';
 
 const TRANSICIONES = {
   Borrador: new Set(['Enviado', 'Anulado']),
-  Enviado: new Set(['Anulado']),
+  Enviado: new Set(['Completado', 'Anulado']),
   Completado: new Set(),
   Anulado: new Set(),
 };
@@ -432,36 +432,6 @@ export async function cambiarEstadoOrdenCompra(idOrdenCompra, datos) {
         [idOrdenCompra, datos.estado, datos.estado === 'Anulado' ? datos.motivo : null]
       );
       return await cargarOrdenCompleta(client, idOrdenCompra);
-    });
-  } catch (error) {
-    throw mapearError(error);
-  }
-}
-
-export async function eliminarOrdenCompra(idOrdenCompra) {
-  try {
-    return await transaction(async (client) => {
-      const { rows } = await client.query(
-        'SELECT id_ocompra FROM tb_ordencompras WHERE id_ocompra = $1 FOR UPDATE',
-        [idOrdenCompra]
-      );
-      if (!rows[0]) throw new AppError('Orden de compra no encontrada.', 404);
-      const estado = await estadoActual(client, idOrdenCompra);
-      if (estado !== 'Borrador') {
-        throw new AppError('Solo se pueden eliminar órdenes de compra en estado Borrador.', 409);
-      }
-      const { rows: compras } = await client.query(
-        'SELECT 1 FROM tb_compras WHERE id_ocompra = $1 LIMIT 1',
-        [idOrdenCompra]
-      );
-      if (compras.length > 0) {
-        throw new AppError('No se puede eliminar la orden de compra porque tiene compras asociadas.', 409);
-      }
-      await client.query('DELETE FROM tb_recepcion_orden WHERE id_ocompra = $1', [idOrdenCompra]);
-      await client.query('DELETE FROM tb_estadooc WHERE id_ocompra = $1', [idOrdenCompra]);
-      await client.query('DELETE FROM tb_detalleordencompra WHERE id_ocompra = $1', [idOrdenCompra]);
-      await client.query('DELETE FROM tb_ordencompras WHERE id_ocompra = $1', [idOrdenCompra]);
-      return { message: 'Orden de compra eliminada correctamente.', id_ocompra: idOrdenCompra };
     });
   } catch (error) {
     throw mapearError(error);
