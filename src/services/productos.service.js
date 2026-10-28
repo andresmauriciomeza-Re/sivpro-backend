@@ -1,6 +1,7 @@
 import AppError from '../errors/AppError.js';
 import { transaction } from '../config/db.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
+import { redondearDosDecimales } from '../utils/insumos.js';
 
 /** Categorías que exigen un único tipo de producto. Las que no están en la
     lista (p. ej. "pollo") aceptan tanto Elaborado como Reventa. */
@@ -300,7 +301,7 @@ export async function cambiarEstadoProducto(idProducto, estado) {
  */
 export async function registrarEntradaCompraEnTransaccion(client, idProducto, datos) {
   const { rows } = await client.query(
-    `SELECT id_producto, nombre, tipo
+    `SELECT id_producto, nombre, tipo, stock, costo_unitario, precio_venta
        FROM tb_productos
       WHERE id_producto = $1
       FOR UPDATE`,
@@ -311,6 +312,22 @@ export async function registrarEntradaCompraEnTransaccion(client, idProducto, da
   if (actual.tipo !== 'Reventa') {
     throw new AppError('Solo las bebidas (tipo Reventa) admiten entrada de compra.', 400);
   }
+
+  // Un mismo producto de reventa puede comprarse a proveedores distintos: el
+  // stock se SUMA, el precio de venta es SIEMPRE el más alto (GREATEST, por
+  // unidad con IVA; una compra más barata nunca lo baja) y el costo pasa a
+  // ser el promedio PONDERADO por unidades. Con stock actual 0 el costo es
+  // directamente el de la compra nueva. `actual` viene de la fila bloqueada
+  // FOR UPDATE, así que el cálculo no se cruza con otra entrada concurrente.
+  const stockActual = Number(actual.stock ?? 0);
+  const unidades = Number(datos.unidades);
+  const costoUnitario = stockActual > 0
+    ? redondearDosDecimales(
+      (stockActual * Number(actual.costo_unitario) + unidades * Number(datos.costo_unitario)) /
+      (stockActual + unidades)
+    )
+    : redondearDosDecimales(datos.costo_unitario);
+  const precioVenta = Math.max(Number(actual.precio_venta ?? 0), Number(datos.precio_venta ?? 0));
 
   // El CASE lee estado y precio_venta de la fila ANTERIOR al update.
   await client.query(
@@ -329,8 +346,8 @@ export async function registrarEntradaCompraEnTransaccion(client, idProducto, da
     [
       idProducto,
       datos.unidades,
-      datos.costo_unitario,
-      datos.precio_venta,
+      costoUnitario,
+      precioVenta,
       datos.ultimo_monto_sin_iva,
       datos.ultimo_iva_compra,
     ]
