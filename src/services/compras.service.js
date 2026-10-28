@@ -365,7 +365,28 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
   );
   if (recalcularRecepcion && compra.id_ocompra != null) {
     const { completado } = await recalcularRecepcionEnTransaccion(client, Number(compra.id_ocompra));
-    if (!completado) {
+    // Conteo de TODAS las compras de la orden (cualquier estado).
+    const { rows: conteo } = await client.query(
+      `SELECT COUNT(*)::int AS total FROM tb_compras WHERE id_ocompra = $1`,
+      [compra.id_ocompra]
+    );
+    const totalCompras = Number(conteo[0]?.total ?? 0);
+
+    if (totalCompras === 1) {
+      // Compra única: la orden también pasa a Anulado en esta misma transacción.
+      const { rows: estados } = await client.query(
+        `SELECT estado FROM tb_estadooc WHERE id_ocompra = $1 ORDER BY fecha_estado DESC, id_estadooc DESC LIMIT 1`,
+        [compra.id_ocompra]
+      );
+      if (estados[0]?.estado !== 'Anulado') {
+        await client.query(
+          `INSERT INTO tb_estadooc (id_ocompra, estado, motivo) VALUES ($1, 'Anulado', $2)`,
+          [compra.id_ocompra, motivo]
+        );
+      }
+      // Aquí NO se revierte Completado → Enviado.
+    } else if (!completado) {
+      // Más de una compra: comportamiento ACTUAL, sin cambios.
       const { rows: estados } = await client.query(
         `SELECT estado FROM tb_estadooc WHERE id_ocompra = $1 ORDER BY fecha_estado DESC, id_estadooc DESC LIMIT 1`,
         [compra.id_ocompra]
