@@ -50,6 +50,7 @@ export async function activarCuenta(token, contrasena) {
   const { rows } = await query(
     `UPDATE tb_usuarios
         SET contrasena = $1,
+            token_version = token_version + 1,
             token_activacion = NULL,
             token_activacion_expira = NULL
       WHERE token_activacion = $2

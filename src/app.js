@@ -80,6 +80,7 @@ app.use((err, req, res, next) => {
       error: {
         message: err.message,
         statusCode: err.statusCode,
+        ...(err.code ? { code: err.code } : {}),
       },
     });
   }

@@ -23,7 +23,7 @@ const normalizarNombre = (valor) => {
 
 const CONSULTA_LOGIN = `
   SELECT u.id_usuario, u.tipo_documento, u.nombre, u.correo, u.telefono,
-         u.contrasena, u.estado, u.id_rol, u.token_activacion,
+         u.contrasena, u.estado, u.id_rol, u.token_activacion, u.token_version,
          r.nombre AS rol, r.estado AS rol_estado
   FROM tb_usuarios u
   JOIN tb_roles r ON r.id_rol = u.id_rol
@@ -219,7 +219,7 @@ export async function login(correo, contrasena) {
   usuario.rol = (await rolBaseEfectivo(usuario.id_rol, usuario.id_usuario)).nombre ?? usuario.rol;
 
   const token = jwt.sign(
-    { sub: usuario.id_usuario, rol: usuario.rol },
+    { sub: usuario.id_usuario, rol: usuario.rol, tv: usuario.token_version ?? 0 },
     process.env.JWT_SECRET,
     {
       algorithm: 'HS256',
