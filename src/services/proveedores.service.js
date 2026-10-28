@@ -104,7 +104,7 @@ export async function actualizarProveedor(idProveedor, datos) {
   try {
     return await transaction(async (client) => {
       const { rows: actuales } = await client.query(
-        `SELECT id_proveedor, tipo_persona, nit, dv, tipo_documento, numero_documento
+        `SELECT id_proveedor, tipo_persona, nit, dv, nombre, tipo_documento, numero_documento
            FROM tb_proveedores
           WHERE id_proveedor = $1
           FOR UPDATE`,
@@ -113,6 +113,9 @@ export async function actualizarProveedor(idProveedor, datos) {
       if (!actuales[0]) throw new AppError('Proveedor no encontrado.', 404);
       if (datos.tipo_persona !== actuales[0].tipo_persona) {
         throw new AppError('El tipo_persona del proveedor no se puede cambiar.', 400);
+      }
+      if (datos.nombre !== actuales[0].nombre) {
+        throw new AppError('El nombre o razón social del proveedor no se puede modificar después de creado.', 400);
       }
       if (actuales[0].tipo_persona === 'Juridica' && datos.nit !== actuales[0].nit) {
         throw new AppError('El NIT del proveedor no se puede modificar después de creado.', 400);

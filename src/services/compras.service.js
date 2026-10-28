@@ -3,8 +3,7 @@ import { query, transaction } from '../config/db.js';
 import { registrarEntradaCompraEnTransaccion, revertirCompraEnTransaccion } from './productos.service.js';
 import { recalcularRecepcionEnTransaccion } from './recepcionOrden.service.js';
 import { convertirCantidadCompra, calcularImporteLinea } from '../utils/compras.js';
-import { redondearDosDecimales } from '../utils/insumos.js';
-import { fechaHoraBogota } from '../utils/produccion.js';
+import { compararNombreInsumo, normalizarNombreInsumo, redondearDosDecimales } from '../utils/insumos.js';
 
 function mapearError(error) {
   if (error instanceof AppError) return error;
@@ -18,12 +17,21 @@ function mapearError(error) {
   return new AppError('No se pudo completar la operación de compras.', 503);
 }
 
-function validarFechaNoFutura(fecha) {
-  if (fecha > fechaHoraBogota().fecha) throw new AppError('La fecha de la compra no puede ser futura.', 400);
+function validarFechaCalendario(fecha) {
+  if (typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha.trim())) {
+    throw new AppError('La fecha de la compra es obligatoria y debe tener formato YYYY-MM-DD.', 400);
+  }
+  const limpia = fecha.trim();
+  const [anio, mes, dia] = limpia.split('-').map(Number);
+  const parsed = new Date(Date.UTC(anio, mes - 1, dia));
+  if (parsed.toISOString().slice(0, 10) !== limpia) {
+    throw new AppError('La fecha de la compra no es válida.', 400);
+  }
 }
 
 async function obtenerCompraEnConexion(client, idCompra) {
-  const { rows } = await client.query(
+  const ejecutar = typeof client === 'function' ? client : client.query.bind(client);
+  const { rows } = await ejecutar(
     `SELECT c.*, p.nombre AS proveedor_nombre
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
@@ -31,7 +39,7 @@ async function obtenerCompraEnConexion(client, idCompra) {
     [idCompra]
   );
   if (!rows[0]) throw new AppError('Compra no encontrada.', 404);
-  const { rows: detalles } = await client.query(
+  const { rows: detalles } = await ejecutar(
     `SELECT id_dcompra, id_compra, id_insumo, id_producto, cantidad, medida,
             precio_unitario, iva, base_sin_iva, monto_iva, subtotal,
             es_no_solicitado, nombre
@@ -73,6 +81,69 @@ async function validarProveedor(client, idProveedor, { debeEstarActivo = true } 
   if (!rows[0]) throw new AppError('Proveedor no encontrado.', 404);
   if (debeEstarActivo && !rows[0].estado) throw new AppError('El proveedor está inactivo.', 409);
   return rows[0];
+}
+
+/**
+ * Regla 9: Crea un insumo no solicitado inexistente dentro de la misma transacción
+ * de recepción, usando el mismo pg_advisory_xact_lock y validación de nombre único
+ * que Insumos, y estableciendo la cantidad recibida como stock_actual inicial
+ * (sin pasar luego por aplicarStockInsumo para evitar doble conteo).
+ */
+async function crearInsumoNoSolicitadoEnTransaccion(client, item, importe) {
+  const nombre = normalizarNombreInsumo(item.nombre);
+  const { rows: categorias } = await client.query(
+    `SELECT id_categoria_insumo, nombre, estado
+       FROM tb_categoria_insumos
+      WHERE id_categoria_insumo = $1`,
+    [item.id_categoria_insumo]
+  );
+  if (!categorias[0] || !categorias[0].estado) {
+    throw new AppError('La categoría del insumo no solicitado no existe o está inactiva.', 400);
+  }
+
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtext($1))',
+    [`insumo-nombre:${compararNombreInsumo(nombre)}`]
+  );
+  const { rows: existentes } = await client.query('SELECT id_insumo, nombre FROM tb_insumo');
+  if (existentes.some((row) => compararNombreInsumo(row.nombre) === compararNombreInsumo(nombre))) {
+    throw new AppError(
+      `Ya existe un insumo con el nombre «${nombre}». Selecciónalo del catálogo de insumos existentes.`,
+      409
+    );
+  }
+
+  const unidades = Number(item.cantidad);
+  if (!Number.isFinite(unidades) || unidades <= 0) {
+    throw new AppError('La cantidad recibida del nuevo insumo debe ser mayor que cero.', 400);
+  }
+  const stockMinimo = item.stock_minimo === undefined ? 0 : Number(item.stock_minimo);
+  if (!Number.isFinite(stockMinimo) || stockMinimo < 0) {
+    throw new AppError('El stock_minimo del nuevo insumo no puede ser negativo.', 400);
+  }
+  const costoUnitario = redondearDosDecimales(importe.subtotal / unidades);
+
+  const { rows } = await client.query(
+    `INSERT INTO tb_insumo
+       (id_categoria_insumo, nombre, tipo, unidad_medida, stock_actual,
+        stock_minimo, stock_maximo, costo_unitario, iva, descripcion,
+        tiempo_preparacion, estado)
+     VALUES ($1, $2, 'Insumo', $3, $4, $5, 0, $6, $7, NULL, NULL, TRUE)
+     RETURNING id_insumo, nombre`,
+    [
+      item.id_categoria_insumo,
+      nombre,
+      item.medida,
+      unidades,
+      stockMinimo,
+      costoUnitario,
+      item.iva,
+    ]
+  );
+  return {
+    id_insumo: Number(rows[0].id_insumo),
+    nombre: rows[0].nombre,
+  };
 }
 
 async function aplicarStockInsumo(client, item, importe, iva) {
@@ -138,7 +209,7 @@ export async function crearCompraEnTransaccion(client, datos, {
   itemsNoSolicitados = [],
   debeProveedorActivo = true,
 } = {}) {
-  validarFechaNoFutura(datos.fecha);
+  validarFechaCalendario(datos.fecha);
   if (typeof datos.n_factura !== 'string' || !datos.n_factura.trim() || datos.n_factura.trim().length > 30) {
     throw new AppError('El número de factura es obligatorio y no puede superar 30 caracteres.', 400);
   }
@@ -166,8 +237,13 @@ export async function crearCompraEnTransaccion(client, datos, {
   for (let indice = 0; indice < items.length; indice += 1) {
     const item = items[indice];
     const importe = importes[indice];
+    let idInsumoDetalle = item.id_insumo;
     let nombre;
-    if (item.id_insumo != null) {
+    if (item.es_no_solicitado && item.id_insumo == null && item.id_producto == null) {
+      const creado = await crearInsumoNoSolicitadoEnTransaccion(client, item, importe);
+      idInsumoDetalle = creado.id_insumo;
+      nombre = creado.nombre;
+    } else if (item.id_insumo != null) {
       const aplicado = await aplicarStockInsumo(client, item, importe, item.iva);
       nombre = aplicado.nombre;
     } else {
@@ -179,7 +255,7 @@ export async function crearCompraEnTransaccion(client, datos, {
          (id_compra, id_insumo, id_producto, cantidad, medida, precio_unitario,
           iva, base_sin_iva, monto_iva, subtotal, es_no_solicitado, nombre)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [idCompra, item.id_insumo, item.id_producto, item.cantidad, item.medida, item.precio_unitario,
+      [idCompra, idInsumoDetalle, item.id_producto, item.cantidad, item.medida, item.precio_unitario,
         item.iva, importe.base_sin_iva, importe.monto_iva, importe.subtotal, item.es_no_solicitado, nombre]
     );
   }

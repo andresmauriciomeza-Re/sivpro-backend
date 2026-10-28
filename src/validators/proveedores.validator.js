@@ -237,6 +237,15 @@ export function validarEditarProveedor(body, actual) {
     throw new AppError('El tipo_persona del proveedor no se puede cambiar.', 400);
   }
 
+  if (
+    entrada.nombre !== undefined &&
+    String(entrada.nombre).trim() !== '' &&
+    proveedorActual.nombre &&
+    String(entrada.nombre).trim() !== String(proveedorActual.nombre).trim()
+  ) {
+    throw new AppError('El nombre o razón social del proveedor no se puede modificar después de creado.', 400);
+  }
+
   if (tipoPersonaActual === 'Juridica') {
     const nitActualDigitos = String(proveedorActual.nit ?? '').replace(/\D/g, '');
     const nitActualConDv =
@@ -257,9 +266,14 @@ export function validarEditarProveedor(body, actual) {
     }
 
     const datos = validarCrearProveedor(
-      { ...entrada, tipo_persona: tipoPersonaActual },
+      {
+        ...entrada,
+        tipo_persona: tipoPersonaActual,
+        nombre: proveedorActual.nombre ?? entrada.nombre,
+      },
       { omitirCalculoNit: true }
     );
+    if (proveedorActual.nombre) datos.nombre = proveedorActual.nombre;
     datos.nit = proveedorActual.nit ?? resolverNitJuridica(entrada.nit, entrada.dv).nit;
     datos.dv =
       proveedorActual.dv ??
@@ -291,9 +305,11 @@ export function validarEditarProveedor(body, actual) {
   const datos = validarCrearProveedor({
     ...entrada,
     tipo_persona: tipoPersonaActual,
+    nombre: proveedorActual.nombre ?? entrada.nombre,
     tipo_documento: proveedorActual.tipo_documento ?? entrada.tipo_documento,
     numero_documento: proveedorActual.numero_documento ?? entrada.numero_documento,
   });
+  if (proveedorActual.nombre) datos.nombre = proveedorActual.nombre;
   if (proveedorActual.tipo_documento) datos.tipo_documento = proveedorActual.tipo_documento;
   if (proveedorActual.numero_documento) datos.numero_documento = proveedorActual.numero_documento;
   if (proveedorActual.nit) {
