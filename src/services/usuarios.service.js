@@ -104,7 +104,7 @@ export async function eliminarUsuario(idObjetivo, idSolicitante) {
     // desactiva (usuarios + fichas), conservando las filas referenciadas.
     await transaction(async (client) => {
       await client.query(
-        'UPDATE tb_usuarios SET estado = FALSE WHERE id_usuario = $1',
+        'UPDATE tb_usuarios SET estado = FALSE, token_version = token_version + 1 WHERE id_usuario = $1',
         [idObjetivo]
       );
       await client.query(
@@ -284,7 +284,13 @@ export async function cambiarEstadoUsuario(id, estado, idSolicitante) {
     throw new AppError('No se puede desactivar al super administrador.', 403);
   }
   if (estado === false && objetivo.estado) await protegerUltimoAdministrador(idObjetivo);
-  await query('UPDATE tb_usuarios SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
+  await query(
+    `UPDATE tb_usuarios
+        SET estado = $1,
+            token_version = token_version + CASE WHEN $1 = FALSE THEN 1 ELSE 0 END
+      WHERE id_usuario = $2`,
+    [estado, idObjetivo]
+  );
   return { mensaje: 'Estado del usuario actualizado correctamente.' };
 }
 
@@ -305,7 +311,18 @@ export async function cambiarEstadoCliente(id, estado, idSolicitante) {
   await transaction(async (client) => {
     await client.query('UPDATE tb_cliente SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
     if (!rows[0].es_empleado) {
-      await client.query('UPDATE tb_usuarios SET estado = $1 WHERE id_usuario = $2', [estado, idObjetivo]);
+      await client.query(
+        `UPDATE tb_usuarios
+            SET estado = $1,
+                token_version = token_version + CASE WHEN $1 = FALSE THEN 1 ELSE 0 END
+          WHERE id_usuario = $2`,
+        [estado, idObjetivo]
+      );
+    } else if (estado === false) {
+      await client.query(
+        'UPDATE tb_usuarios SET token_version = token_version + 1 WHERE id_usuario = $1',
+        [idObjetivo]
+      );
     }
   });
   return { mensaje: 'Estado del cliente actualizado correctamente.' };

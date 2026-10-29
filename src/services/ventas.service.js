@@ -8,6 +8,7 @@ const normalizarNombre = (valor) => {
 import { query, transaction } from '../config/db.js';
 import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
+import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
@@ -117,18 +118,60 @@ function validarProductosDeBase(lineas, productos) {
 }
 
 async function resolverClienteToken(client, idUsuario) {
-  const { rows } = await client.query(
-    `SELECT c.id_cliente
-       FROM tb_cliente c
-       JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
+  const { rows: usuarios } = await client.query(
+    `SELECT u.id_usuario,
+            (
+              LOWER(TRIM(r.nombre)) = 'administrador'
+              OR EXISTS (
+                SELECT 1
+                  FROM tb_empleado e
+                  JOIN tb_contratacion_empleado ce
+                    ON ce.id_empleado = e.id_empleado
+                   AND ${contratoVigenteSql('ce')}
+                 WHERE e.id_usuario = u.id_usuario
+                   AND e.estado = TRUE
+              )
+            ) AS es_personal
+       FROM tb_usuarios u
        JOIN tb_roles r ON r.id_rol = u.id_rol
-      WHERE c.id_usuario = $1 AND c.estado = TRUE AND u.estado = TRUE
-        AND r.estado = TRUE AND r.nombre = 'Cliente'
-      FOR UPDATE OF c`,
+      WHERE u.id_usuario = $1 AND u.estado = TRUE AND r.estado = TRUE
+      FOR UPDATE OF u`,
     [idUsuario]
   );
-  if (!rows[0]) throw new AppError('La cuenta no tiene un perfil de cliente activo.', 403);
-  return rows[0].id_cliente;
+  const usuario = usuarios[0];
+  if (!usuario) throw new AppError('La cuenta no tiene un perfil de cliente activo.', 403);
+
+  const consultarPerfil = async () => {
+    const { rows } = await client.query(
+      'SELECT id_cliente, estado FROM tb_cliente WHERE id_usuario = $1 FOR UPDATE',
+      [idUsuario]
+    );
+    return rows[0] ?? null;
+  };
+
+  let perfil = await consultarPerfil();
+  if (!perfil && !usuario.es_personal) {
+    throw new AppError('La cuenta no tiene un perfil de cliente activo.', 403);
+  }
+  if (!perfil) {
+    await client.query(
+      'INSERT INTO tb_cliente (id_usuario) VALUES ($1) ON CONFLICT (id_usuario) DO NOTHING',
+      [idUsuario]
+    );
+    perfil = await consultarPerfil();
+  }
+
+  if (perfil && !perfil.estado && usuario.es_personal) {
+    await client.query(
+      'UPDATE tb_cliente SET estado = TRUE WHERE id_usuario = $1 AND estado = FALSE',
+      [idUsuario]
+    );
+    perfil = await consultarPerfil();
+  }
+  if (!perfil || !perfil.estado) {
+    throw new AppError('La cuenta no tiene un perfil de cliente activo.', 403);
+  }
+  return perfil.id_cliente;
 }
 
 async function resolverOCrearClientePanel(client, datos) {
