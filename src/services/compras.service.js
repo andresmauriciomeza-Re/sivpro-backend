@@ -197,7 +197,12 @@ async function aplicarStockProducto(client, item, importe, iva) {
     costo_unitario: costoUnitario,
     precio_venta: item.precio_venta,
     ultimo_monto_sin_iva: montoSinIvaPresentacion,
-    ultimo_iva_compra: iva,
+    ultimo_iva_compra:  iva,
+    // Punto C1: el monto unitario tal cual lo digitó el usuario en la línea
+    // (por presentación, SIN dividir por IVA). Es lo que se precarga en
+    // "Monto unitario" la próxima vez que se elige el producto en Nueva
+    // Compra, Orden de Compra o Recepción — sin convertirlo.
+    ultimo_monto_digitado: item.precio_unitario,
   });
   return { nombre: resultado.nombre, cantidad: item.cantidad, medida: item.medida, unidades_stock: unidades };
 }

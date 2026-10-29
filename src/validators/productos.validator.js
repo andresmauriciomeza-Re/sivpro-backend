@@ -250,12 +250,22 @@ export function validarEntradaCompra(body) {
   const iva = numero(entrada.ultimo_iva_compra, 'ultimo_iva_compra');
   if (iva < 0 || iva > 100) throw new AppError('El IVA de compra debe estar entre 0 y 100.', 400);
 
+  // Punto C1: monto unitario OPCIONAL tal cual lo digitó el usuario (sin
+  // convertir por IVA). Si no llega, null: el UPDATE usa COALESCE y conserva
+  // el último valor guardado.
+  let montoDigitado = null;
+  if (entrada.ultimo_monto_digitado !== undefined && entrada.ultimo_monto_digitado !== null) {
+    montoDigitado = numero(entrada.ultimo_monto_digitado, 'ultimo_monto_digitado');
+    if (montoDigitado < 0) throw new AppError('El monto digitado no puede ser negativo.', 400);
+  }
+
   return {
     unidades,
     costo_unitario: costoUnitario,
     precio_venta: precioVenta,
     ultimo_monto_sin_iva: montoSinIva,
     ultimo_iva_compra: iva,
+    ultimo_monto_digitado: montoDigitado,
   };
 }
 

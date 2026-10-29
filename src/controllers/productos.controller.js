@@ -58,6 +58,7 @@ export async function obtenerProductosGestion(req, res, next) {
               p.imagen_data IS NOT NULL AS tiene_imagen,
               p.contenido, p.contenido_unidad, p.unidad_compra,
               p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
+              p.ultimo_monto_digitado,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
               c.emoji AS categoria_emoji, c.estado AS categoria_estado,
               p.precio_grande
