@@ -27,6 +27,7 @@ const COLUMNAS_GESTION = `
   p.imagen, p.estado,
   p.contenido, p.contenido_unidad, p.unidad_compra,
   p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
+  p.ultimo_monto_digitado,
   c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
   c.emoji AS categoria_emoji, c.estado AS categoria_estado,
   p.precio_grande`;
@@ -110,11 +111,11 @@ export async function crearProducto(datos) {
            (id_categoria, nombre, tipo, unidad_venta, imagen,
             precio_venta, precio_grande, costo_unitario, stock, estado,
             contenido, contenido_unidad, unidad_compra, unidades_por_empaque,
-            ultimo_monto_sin_iva, ultimo_iva_compra)
+            ultimo_monto_sin_iva, ultimo_iva_compra, ultimo_monto_digitado)
          VALUES ($1, $2, $3, $4, $5,
                  $6, $7, 0, 0, $8,
                  $9, $10, $11, $12,
-                 NULL, NULL)
+                 NULL, NULL, NULL)
          RETURNING id_producto`,
         [
           datos.id_categoria,
@@ -337,6 +338,7 @@ export async function registrarEntradaCompraEnTransaccion(client, idProducto, da
             precio_venta = $4,
             ultimo_monto_sin_iva = $5,
             ultimo_iva_compra = $6,
+            ultimo_monto_digitado = COALESCE($7, ultimo_monto_digitado),
             estado = CASE
                        WHEN estado = 'No disponible' AND precio_venta = 0
                          THEN 'Disponible'
@@ -350,6 +352,9 @@ export async function registrarEntradaCompraEnTransaccion(client, idProducto, da
       precioVenta,
       datos.ultimo_monto_sin_iva,
       datos.ultimo_iva_compra,
+      // Punto C1: monto tal cual lo digitó el usuario (null = no viene: el
+      // COALESCE conserva el último guardado).
+      datos.ultimo_monto_digitado ?? null,
     ]
   );
 
