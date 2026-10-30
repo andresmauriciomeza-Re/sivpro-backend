@@ -32,7 +32,14 @@ const NOMBRE_PRODUCTO = 'Pizza Hawaiana';
 const HORA_RECOGIDA = '19:30:00';
 const MANTENER = process.argv.includes('--keep');
 
-const creadas = { idProducto: null, idCliente: null, stockOriginal: null, ordenes: [], ventas: [] };
+const creadas = {
+  idProducto: null,
+  idCliente: null,
+  stockOriginal: null,
+  estadoOriginal: null,
+  ordenes: [],
+  ventas: [],
+};
 let fallos = 0;
 
 function ok(condicion, texto) {
@@ -59,11 +66,17 @@ async function stockDe(idProducto) {
   return Number(rows[0].stock);
 }
 
+async function estadoDe(idProducto) {
+  const { rows } = await pool.query('SELECT estado FROM tb_productos WHERE id_producto = $1', [idProducto]);
+  return rows[0]?.estado;
+}
+
 async function preparar() {
-  const { rows } = await pool.query('SELECT id_producto, stock FROM tb_productos WHERE nombre = $1', [NOMBRE_PRODUCTO]);
+  const { rows } = await pool.query('SELECT id_producto, stock, estado FROM tb_productos WHERE nombre = $1', [NOMBRE_PRODUCTO]);
   if (!rows[0]) throw new Error(`No existe el producto «${NOMBRE_PRODUCTO}» en la base.`);
   creadas.idProducto = Number(rows[0].id_producto);
   creadas.stockOriginal = Number(rows[0].stock);
+  creadas.estadoOriginal = rows[0].estado;
 
   const { rows: clientes } = await pool.query(
     `SELECT c.id_cliente
@@ -78,6 +91,7 @@ async function preparar() {
   // Parte de 0 para que las cifras coincidan con las reglas del enunciado
   // (se repone el valor original en la limpieza).
   await pool.query('UPDATE tb_productos SET stock = 0 WHERE id_producto = $1', [creadas.idProducto]);
+  igual(await estadoDe(creadas.idProducto), 'No disponible', 'stock 0 fuerza No disponible');
   console.log(`Producto de prueba: ${NOMBRE_PRODUCTO} (id ${creadas.idProducto}), stock inicial 0.`);
 }
 
@@ -105,7 +119,7 @@ async function prueba1_cantidadInicial() {
     fecha_solicitada: fechaHoraBogota().fecha,
     hora_solicitada: null,
     observacion: 'Prueba pre-hechas (se borra sola)',
-    lineas: [{ id_insumo: creadas.idProducto, cantidad: 10 }],
+    lineas: [{ id_producto: creadas.idProducto, cantidad: 10 }],
   });
   creadas.ordenes.push(orden.id_orden_produccion);
 
@@ -127,6 +141,10 @@ async function prueba1_cantidadInicial() {
 
 async function prueba2_aceptarVenta() {
   console.log('\n2) Aceptar el pago de 10 unidades');
+  await pool.query(
+    `UPDATE tb_productos SET estado = 'Disponible' WHERE id_producto = $1`,
+    [creadas.idProducto]
+  );
   const idVenta = await crearVenta(10);
   const venta = await verificarVenta(idVenta, { accion: 'aceptar' });
   creadas.ordenes.push(Number(venta.id_orden_produccion));
@@ -139,11 +157,15 @@ async function prueba2_aceptarVenta() {
   ok(orden.fecha_solicitada != null, 'fecha_solicitada viene de la fecha del pedido');
   ok(orden.productos_descontados === true, 'productos_descontados = true (descuento aplicado una sola vez)');
   igual(await stockDe(creadas.idProducto), 0, 'el stock de Hawaiana pasa a 0');
+  igual(await estadoDe(creadas.idProducto), 'No disponible', 'al agotarse, el producto pasa a No disponible');
 }
 
 async function prueba3_stockInsuficiente() {
   console.log('\n3) Vender 10 cuando sólo hay 6');
-  await pool.query('UPDATE tb_productos SET stock = 6 WHERE id_producto = $1', [creadas.idProducto]);
+  await pool.query(
+    `UPDATE tb_productos SET stock = 6, estado = 'Disponible' WHERE id_producto = $1`,
+    [creadas.idProducto]
+  );
   const idVenta = await crearVenta(10);
 
   let error = null;
@@ -213,7 +235,10 @@ async function limpiar() {
     await pool.query('DELETE FROM tb_venta WHERE id_venta = ANY($1::integer[])', [creadas.ventas]);
   }
   if (creadas.idProducto != null && creadas.stockOriginal != null) {
-    await pool.query('UPDATE tb_productos SET stock = $2 WHERE id_producto = $1', [creadas.idProducto, creadas.stockOriginal]);
+    await pool.query(
+      'UPDATE tb_productos SET stock = $2, estado = $3 WHERE id_producto = $1',
+      [creadas.idProducto, creadas.stockOriginal, creadas.estadoOriginal]
+    );
   }
   console.log('\nLimpieza OK: órdenes/ventas de la prueba borradas y stock original repuesto.');
 }

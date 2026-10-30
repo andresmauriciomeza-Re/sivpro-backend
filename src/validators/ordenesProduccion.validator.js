@@ -1,6 +1,6 @@
 import AppError from '../errors/AppError.js';
 
-const ESTADOS = ['Pendiente', 'En proceso', 'Completada', 'Cancelada'];
+const ESTADOS = ['Pendiente', 'En proceso', 'Por verificar', 'Completada', 'Cancelada'];
 const TIPOS = ['Preparacion', 'Pedido'];
 
 function numero(valor, campo) {
@@ -46,8 +46,39 @@ function validarHora(valor) {
   return valor.length === 5 ? `${valor}:00` : valor;
 }
 
+function validarFechaHoraLocal(valor) {
+  if (typeof valor !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(valor)) {
+    throw new AppError('La fecha y hora límite debe tener formato YYYY-MM-DDTHH:mm.', 400);
+  }
+  const [fecha, hora] = valor.split('T');
+  validarFecha(fecha);
+  return `${fecha} ${hora}:00`;
+}
+
 export function validarIdOrdenProduccion(valor) {
   return enteroPositivo(valor, 'id_orden_produccion');
+}
+
+export function validarGenerarOrdenProduccion(body) {
+  const entrada = body || {};
+  const salida = {
+    fecha_entrega_estimada: validarFechaHoraLocal(entrada.fecha_entrega_estimada),
+  };
+  if (entrada.lineas !== undefined) {
+    if (!Array.isArray(entrada.lineas) || entrada.lineas.length === 0) {
+      throw new AppError('Debes enviar la cantidad de todas las líneas de la orden.', 400);
+    }
+    const vistos = new Set();
+    salida.lineas = entrada.lineas.map((linea, indice) => {
+      const id_detalle_op = enteroPositivo(linea?.id_detalle_op, `lineas[${indice}].id_detalle_op`);
+      if (vistos.has(id_detalle_op)) throw new AppError('No repitas detalles de orden.', 400);
+      vistos.add(id_detalle_op);
+      const cantidad = numero(linea?.cantidad, `lineas[${indice}].cantidad`);
+      if (cantidad <= 0) throw new AppError('La cantidad debe ser mayor que cero.', 400);
+      return { id_detalle_op, cantidad };
+    });
+  }
+  return salida;
 }
 
 function idOpcional(valor, campo, indice) {
@@ -56,9 +87,9 @@ function idOpcional(valor, campo, indice) {
 }
 
 /** Cada línea lleva un producto insumo (id_insumo) o un producto del menú
- *  (id_producto). El frontend de "cantidad inicial" manda el id del producto
- *  creado por el campo id_insumo: el servicio resuelve hacia qué tabla apunta,
- *  así que aquí sólo se exige que venga UNO de los dos. */
+ *  (id_producto). Se conserva la resolución de id_insumo sin prefijo para
+ *  compatibilidad con clientes anteriores; los nuevos envían id_producto
+ *  explícito para evitar colisiones entre los IDs de ambas tablas. */
 export function validarLineasPreparacion(valor) {
   if (!Array.isArray(valor) || valor.length === 0) {
     throw new AppError('La preparación debe incluir al menos una línea.', 400);
@@ -98,7 +129,10 @@ export function validarCrearOrdenProduccion(body) {
   }
   return {
     tipo: 'Preparacion',
-    fecha_solicitada: validarFecha(entrada.fecha_solicitada),
+    fecha_solicitada:
+      entrada.fecha_solicitada == null || entrada.fecha_solicitada === ''
+        ? null
+        : validarFecha(entrada.fecha_solicitada),
     hora_solicitada: validarHora(entrada.hora_solicitada),
     observacion: textoOpcional(entrada.observacion, 'observacion', 255),
     lineas: validarLineasPreparacion(entrada.lineas),
@@ -130,7 +164,9 @@ export function validarCompletarOrdenProduccion(body) {
       if (vistos.has(id_detalle_op)) throw new AppError('No repitas detalles de orden.', 400);
       vistos.add(id_detalle_op);
       const cantidad_real = numero(linea?.cantidad_real, `lineas[${indice}].cantidad_real`);
-      if (cantidad_real < 0) throw new AppError('La cantidad real no puede ser negativa.', 400);
+      if (!Number.isSafeInteger(cantidad_real) || cantidad_real < 0) {
+        throw new AppError('La cantidad real debe ser un entero mayor o igual a cero.', 400);
+      }
       return { id_detalle_op, cantidad_real };
     }),
   };
