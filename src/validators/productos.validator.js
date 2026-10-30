@@ -3,7 +3,7 @@ import AppError from '../errors/AppError.js';
 /** Catálogos de producto. El tipo también condiciona qué campos son
     obligatorios: Elaborado pide precio; Reventa pide los datos de bebida. */
 const TIPOS_PRODUCTO = ['Elaborado', 'Reventa'];
-const ESTADOS_PRODUCTO = ['Disponible', 'No disponible', 'Descontinuado'];
+const ESTADOS_PRODUCTO = ['Descontinuado', 'Automático'];
 const CONTENIDO_UNIDADES = ['ml', 'L'];
 const UNIDADES_COMPRA = ['und', 'paca', 'caja'];
 
@@ -223,7 +223,7 @@ export function validarEdicionProducto(body) {
 export function validarEstadoProducto(body) {
   const estado = typeof body?.estado === 'string' ? body.estado.trim() : '';
   if (!ESTADOS_PRODUCTO.includes(estado)) {
-    throw new AppError("El estado debe ser 'Disponible', 'No disponible' o 'Descontinuado'.", 400);
+    throw new AppError("El estado debe ser 'Descontinuado' o 'Automático'.", 400);
   }
   return { estado };
 }

@@ -1,5 +1,7 @@
 import {
   actualizarOrdenProduccion,
+  obtenerCapacidadProduccion,
+  obtenerCalculoVerificacionProduccion,
   completarOrdenProduccion,
   crearOrdenProduccion,
   darBajaOrdenProduccion,
@@ -15,6 +17,7 @@ import {
   validarDarBajaOrdenProduccion,
   validarEditarOrdenProduccion,
   validarFiltrosOrdenesProduccion,
+  validarGenerarOrdenProduccion,
   validarIdOrdenProduccion,
 } from '../validators/ordenesProduccion.validator.js';
 import responderConFaltantes from '../utils/responderConFaltantes.js';
@@ -38,6 +41,22 @@ export async function obtenerOrdenProduccionController(req, res, next) {
 export async function obtenerRequeridosOrdenProduccionController(req, res, next) {
   try {
     res.json(await obtenerRequeridosOrdenProduccion(validarIdOrdenProduccion(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function obtenerCapacidadProduccionController(req, res, next) {
+  try {
+    res.json(await obtenerCapacidadProduccion(validarIdOrdenProduccion(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function obtenerCalculoVerificacionProduccionController(req, res, next) {
+  try {
+    res.json(await obtenerCalculoVerificacionProduccion(validarIdOrdenProduccion(req.params.id)));
   } catch (error) {
     next(error);
   }
@@ -72,7 +91,10 @@ export async function eliminarOrdenProduccionController(req, res, next) {
 
 export async function iniciarOrdenProduccionController(req, res, next) {
   try {
-    res.json(await iniciarOrdenProduccion(validarIdOrdenProduccion(req.params.id)));
+    res.json(await iniciarOrdenProduccion(
+      validarIdOrdenProduccion(req.params.id),
+      validarGenerarOrdenProduccion(req.body),
+    ));
   } catch (error) {
     responderConFaltantes(error, res, next);
   }

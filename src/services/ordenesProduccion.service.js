@@ -1,9 +1,11 @@
 import AppError from '../errors/AppError.js';
 import { pool, query, transaction } from '../config/db.js';
 import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/produccion.js';
+import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
 const ESTADO_EN_PROCESO = 'En proceso';
+const ESTADO_POR_VERIFICAR = 'Por verificar';
 const ESTADO_COMPLETADA = 'Completada';
 const ESTADO_CANCELADA = 'Cancelada';
 const TIPO_PREPARACION = 'Preparacion';
@@ -32,6 +34,17 @@ function parsearArray(valor) {
   }
 }
 
+function parsearJson(valor, respaldo = null) {
+  if (typeof valor === 'string') {
+    try {
+      return JSON.parse(valor);
+    } catch {
+      return respaldo;
+    }
+  }
+  return valor ?? respaldo;
+}
+
 function numeroONull(valor) {
   return valor == null ? null : Number(valor);
 }
@@ -51,6 +64,8 @@ function mapearLinea(row) {
     nombre: row.nombre,
     tamano: row.tamano,
     cantidad_estimada: Number(row.cantidad_estimada),
+    cantidad_debida: numeroONull(row.cantidad_debida),
+    insumos_consumidos: parsearJson(row.insumos_consumidos, []),
     cantidad_real: numeroONull(row.cantidad_real),
     merma: numeroONull(row.merma),
     unidad: row.unidad,
@@ -61,7 +76,8 @@ async function cargarLineasOrden(client, idOrden) {
   const { rows } = await client.query(
     `SELECT d.id_detalle_op, d.id_producto, d.id_insumo, d.id_ft,
             ft.version AS version_ficha, d.nombre, d.tamano,
-            d.cantidad_estimada, d.cantidad_real, d.merma, d.unidad
+            d.cantidad_estimada, d.cantidad_debida, d.insumos_consumidos,
+            d.cantidad_real, d.merma, d.unidad
        FROM tb_detalle_orden_produccion d
        LEFT JOIN tb_ficha_tecnica ft ON ft.id_ft = d.id_ft
       WHERE d.id_orden_produccion = $1
@@ -75,6 +91,7 @@ function mapearOrden(row, lineas) {
   const {
     venta_numero_resuelto: ventaNumeroResuelto,
     cliente_resuelto: clienteResuelto,
+    fecha_entrega_estimada_local: fechaEntregaEstimadaLocal,
     ...orden
   } = row;
   const historial = parsearArray(orden.historial);
@@ -90,17 +107,19 @@ function mapearOrden(row, lineas) {
   ];
   for (const campo of numericos) orden[campo] = numeroONull(orden[campo]);
   orden.fecha_solicitada = fechaSql(orden.fecha_solicitada);
+  orden.fecha_entrega_estimada = fechaEntregaEstimadaLocal ?? null;
   orden.venta_numero = ventaNumeroResuelto ?? orden.venta_numero ?? null;
   orden.cliente = clienteResuelto ?? orden.cliente ?? null;
   orden.historial = historial;
   orden.insumos_requeridos = insumosRequeridos;
-  orden.lineas = lineas;
+  orden.lineas = lineas.map(({ insumos_consumidos: _insumosConsumidos, ...linea }) => linea);
   return orden;
 }
 
 async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}) {
   const { rows } = await client.query(
     `SELECT op.*,
+            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op
@@ -116,6 +135,62 @@ async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}
   return { row: rows[0], orden: mapearOrden(rows[0], lineas), lineas };
 }
 
+export async function actualizarOrdenesPorVerificar(client) {
+  await client.query(
+    `WITH ahora AS (
+       SELECT CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota' AS fecha_hora
+     )
+     UPDATE tb_orden_produccion AS op
+        SET estado = $1::text,
+            historial = COALESCE(op.historial, '[]'::jsonb) || jsonb_build_array(
+              jsonb_build_object(
+                'de', op.estado,
+                'a', $1::text,
+                'fechaHora', to_char(ahora.fecha_hora, 'YYYY-MM-DD HH24:MI:SS'),
+                'actor', 'Sistema',
+                'accion', 'cambio_automatico_a_por_verificar',
+                'detalle', CASE
+                  WHEN op.fecha_entrega_estimada IS NULL
+                    THEN 'Orden antigua sin fecha límite enviada a verificación.'
+                  ELSE 'Fecha límite vencida; orden enviada a verificación.'
+                END
+              )
+            )
+       FROM ahora
+      WHERE op.estado = $2::text
+        AND (op.fecha_entrega_estimada IS NULL OR op.fecha_entrega_estimada <= ahora.fecha_hora)`,
+    [ESTADO_POR_VERIFICAR, ESTADO_EN_PROCESO],
+  );
+}
+
+async function validarFechaLimite(client, row, fechaLimite) {
+  if (row.tipo !== TIPO_PEDIDO) {
+    const { rows } = await client.query(
+      `SELECT $1::timestamp >= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') AS no_pasada`,
+      [fechaLimite],
+    );
+    if (!rows[0]?.no_pasada) {
+      throw new AppError('La fecha límite no puede ser anterior a la hora actual de Bogotá.', 400);
+    }
+    return;
+  }
+
+  const { rows } = await client.query(
+    `SELECT
+       to_char(CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD"T"HH24:MI:SS') AS ahora_bogota,
+       CASE
+         WHEN $2::time IS NULL THEN NULL
+         ELSE to_char($1::date + $2::time, 'YYYY-MM-DD"T"HH24:MI:SS')
+       END AS recogida_bogota`,
+    [row.fecha_solicitada, row.hora_solicitada],
+  );
+  validarFechaLimitePedido({
+    fechaLimite,
+    ahoraBogota: rows[0]?.ahora_bogota,
+    recogidaBogota: rows[0]?.recogida_bogota,
+  });
+}
+
 function validarFechaNoPasada(fecha) {
   if (fecha < fechaHoraBogota().fecha) throw new AppError('La fecha solicitada no puede ser pasada.', 400);
 }
@@ -128,7 +203,53 @@ function validarFechaNoPasada(fecha) {
  *  id_ft = NULL. */
 const participaEnInsumos = (linea) => linea.id_insumo != null || linea.id_ft != null;
 
-/**
+async function snapshotConsumoLinea(client, linea) {
+  const idFt = linea.id_ft == null ? null : Number(linea.id_ft);
+  if (!participaEnInsumos(linea)) {
+    return { id_ft: idFt, rendimiento_ficha: null, medida_ficha: null, insumos: [] };
+  }
+  const calculo = await calcularRequeridosProduccion(
+    client,
+    [{ ...linea, cantidad_estimada: 1 }],
+  );
+  const receta = calculo.recetas.find((item) => item.id_ft === idFt);
+  return {
+    id_ft: idFt,
+    rendimiento_ficha: receta?.ficha?.cantidad == null ? null : Number(receta.ficha.cantidad),
+    medida_ficha: receta?.ficha?.medida ?? null,
+    porciones_ficha: receta?.ficha?.porciones == null ? null : Number(receta.ficha.porciones),
+    insumos: calculo.requeridos.map((requerido) => ({
+      id_insumo: Number(requerido.id_insumo),
+      nombre: requerido.nombre,
+      cantidad_por_unidad: Number(requerido.requerido),
+      cantidad_descontada: Number((Number(requerido.requerido) * Number(linea.cantidad_estimada)).toFixed(6)),
+      unidad: requerido.unidad,
+    })),
+  };
+}
+
+function cantidadDebidaDesdeSnapshot(linea, snapshot = linea.insumos_consumidos) {
+  const solicitada = Number(linea.cantidad_estimada);
+  const insumos = Array.isArray(snapshot?.insumos) ? snapshot.insumos : [];
+  const rendimientos = insumos
+    .map((insumo) => {
+      const porUnidad = Number(insumo.cantidad_por_unidad);
+      const descontada = Number(insumo.cantidad_descontada);
+      return porUnidad > 0 && Number.isFinite(descontada) ? descontada / porUnidad : null;
+    })
+    .filter((cantidad) => cantidad != null && Number.isFinite(cantidad));
+  const calculada = rendimientos.length ? Math.min(...rendimientos) : solicitada;
+  if (rendimientos.length && Math.abs(calculada - solicitada) > Math.max(0.00001, Math.abs(solicitada) * 0.000001)) {
+    throw new AppError(`El consumo guardado de «${linea.nombre}» no coincide con la cantidad pedida al Generar.`, 409);
+  }
+  const cantidadDebida = Math.round(calculada);
+  if (!Number.isSafeInteger(cantidadDebida) || Math.abs(calculada - cantidadDebida) > 0.00001) {
+    throw new AppError(`El cálculo de «${linea.nombre}» no da una cantidad entera verificable.`, 409);
+  }
+  return cantidadDebida;
+}
+
+/** 
  * Resuelve cada línea de la entrada a producto insumo o a producto 'Elaborado'
  * del menú. tb_insumo y tb_productos comparten rango de ids (hoy chocan siete
  * productos), así que la regla es:
@@ -267,8 +388,15 @@ async function resolverLineas(client, lineas) {
 /** Valida las líneas, calcula los insumos requeridos (sólo de las líneas que
  *  tienen receta) y devuelve además las filas de detalle a insertar, en el
  *  MISMO orden en que llegaron las líneas. */
-async function prepararLineas(client, lineasEntrada, { bloquearInsumos = false } = {}) {
+async function prepararLineas(client, lineasEntrada, {
+  bloquearInsumos = false,
+  requiereFichaProducto = false,
+} = {}) {
   const resueltas = await resolverLineas(client, lineasEntrada);
+  if (requiereFichaProducto) {
+    const sinFicha = resueltas.find((linea) => linea.id_producto != null && linea.id_ft == null);
+    if (sinFicha) throw new AppError(`«${sinFicha.nombre}» no tiene ficha técnica vigente.`, 400);
+  }
   const calculo = await calcularRequeridosProduccion(
     client,
     resueltas.filter(participaEnInsumos),
@@ -326,8 +454,12 @@ async function insertarDetallesPreparacion(client, idOrden, recetas) {
 
 /** Comparte creación transaccional para POST /ordenes-produccion y alta desde Insumos. */
 export async function crearPreparacionEnTransaccion(client, datos, detalleInicial = null) {
-  validarFechaNoPasada(datos.fecha_solicitada);
-  const { calculo, detalle } = await prepararLineas(client, datos.lineas, { bloquearInsumos: true });
+  const fechaSolicitada = datos.fecha_solicitada ?? fechaHoraBogota().fecha;
+  validarFechaNoPasada(fechaSolicitada);
+  const { calculo, detalle } = await prepararLineas(client, datos.lineas, {
+    bloquearInsumos: true,
+    requiereFichaProducto: true,
+  });
   lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
 
   const momento = fechaHoraBogota();
@@ -341,7 +473,7 @@ export async function crearPreparacionEnTransaccion(client, datos, detalleInicia
      RETURNING id_orden_produccion`,
     [
       TIPO_PREPARACION,
-      datos.fecha_solicitada,
+      fechaSolicitada,
       datos.hora_solicitada ?? null,
       ESTADO_PENDIENTE,
       datos.observacion ?? null,
@@ -368,6 +500,7 @@ async function crearPreparacion(datos) {
 }
 
 export async function listarOrdenesProduccion(filtros) {
+  await actualizarOrdenesPorVerificar(pool);
   const condiciones = [];
   const valores = [];
   if (filtros.estado !== undefined) {
@@ -380,6 +513,7 @@ export async function listarOrdenesProduccion(filtros) {
   }
   const { rows } = await query(
     `SELECT op.*,
+            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op
@@ -399,6 +533,7 @@ export async function listarOrdenesProduccion(filtros) {
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
+  await actualizarOrdenesPorVerificar(pool);
   const { orden } = await obtenerOrdenEnConexion(pool, idOrden);
   return orden;
 }
@@ -516,19 +651,162 @@ async function descontarInsumos(client, lineas) {
   return calculo;
 }
 
-export async function iniciarOrdenProduccion(idOrden) {
+async function capacidadesPorLinea(client, lineas) {
+  const requeridosPorLinea = [];
+  for (const linea of lineas) {
+    const calculo = await calcularRequeridosProduccion(
+      client,
+      participaEnInsumos(linea) ? [{ ...linea, cantidad_estimada: 1 }] : [],
+      { bloquearInsumos: true },
+    );
+    requeridosPorLinea.push({
+      id_detalle_op: linea.id_detalle_op,
+      requeridos_por_unidad: calculo.requeridos,
+      faltantes: calculo.faltantes,
+    });
+  }
+  return requeridosPorLinea.map((capacidad) => {
+    if (capacidad.requeridos_por_unidad.length === 0) return { ...capacidad, maximo: null };
+    let maximo = Number.POSITIVE_INFINITY;
+    for (const requerido of capacidad.requeridos_por_unidad) {
+      if (requerido.motivo || requerido.stock == null || requerido.requerido <= 0) {
+        maximo = 0;
+        break;
+      }
+      const consumoRestante = lineas.reduce((total, otra) => {
+        if (otra.id_detalle_op === capacidad.id_detalle_op) return total;
+        const mismoInsumo = requeridosPorLinea
+          .find((item) => item.id_detalle_op === otra.id_detalle_op)
+          ?.requeridos_por_unidad.find((item) => item.id_insumo === requerido.id_insumo);
+        return total + Number(otra.cantidad_estimada) * Number(mismoInsumo?.requerido ?? 0);
+      }, 0);
+      maximo = Math.min(
+        maximo,
+        Math.max(0, Math.floor((Number(requerido.stock) - consumoRestante + 0.000001) / Number(requerido.requerido))),
+      );
+    }
+    return { ...capacidad, maximo: Number.isFinite(maximo) ? maximo : null };
+  });
+}
+
+export async function obtenerCapacidadProduccion(idOrden) {
+  try {
+    return await transaction(async (client) => {
+      const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
+      if (row.estado !== ESTADO_PENDIENTE) {
+        throw new AppError('Solo se puede consultar la capacidad de órdenes Pendientes.', 409);
+      }
+      if (row.tipo === TIPO_PEDIDO) {
+        return { cantidades_bloqueadas: true, lineas: lineas.map((linea) => ({
+          id_detalle_op: linea.id_detalle_op,
+          requeridos_por_unidad: [],
+        })) };
+      }
+      return {
+        cantidades_bloqueadas: false,
+        lineas: await capacidadesPorLinea(client, lineas),
+      };
+    });
+  } catch (error) {
+    throw mapearError(error);
+  }
+}
+
+export async function obtenerCalculoVerificacionProduccion(idOrden) {
+  try {
+    return await transaction(async (client) => {
+      await actualizarOrdenesPorVerificar(client);
+      const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden);
+      if (row.estado !== ESTADO_POR_VERIFICAR) {
+        throw new AppError('Solo se puede consultar el cálculo de órdenes Por verificar.', 409);
+      }
+      if (row.tipo === TIPO_PEDIDO) return { lineas: [] };
+      return {
+        lineas: await Promise.all(lineas.map(async (linea) => {
+          if (linea.cantidad_debida != null) {
+            const calculada = cantidadDebidaDesdeSnapshot(linea);
+            if (Math.abs(calculada - Number(linea.cantidad_debida)) > 0.00001) {
+              throw new AppError(`El cálculo guardado de «${linea.nombre}» no coincide con los insumos usados.`, 409);
+            }
+            return {
+              id_detalle_op: linea.id_detalle_op,
+              cantidad_debida: Number(linea.cantidad_debida),
+              calculada_al_verificar: false,
+            };
+          }
+          const snapshot = await snapshotConsumoLinea(client, linea);
+          return {
+            id_detalle_op: linea.id_detalle_op,
+            cantidad_debida: cantidadDebidaDesdeSnapshot(linea, snapshot),
+            calculada_al_verificar: true,
+          };
+        })),
+      };
+    });
+  } catch (error) {
+    throw mapearError(error);
+  }
+}
+
+export async function iniciarOrdenProduccion(idOrden, datos) {
   try {
     return await transaction(async (client) => {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
       if (row.estado !== ESTADO_PENDIENTE) throw new AppError('Solo se pueden iniciar órdenes Pendientes.', 409);
+      const esPedido = row.tipo === TIPO_PEDIDO;
+      await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
+      let lineasGeneradas = lineas;
+      if (esPedido) {
+        if (datos.lineas !== undefined) throw new AppError('No se puede cambiar la cantidad de un Pedido.', 400);
+      } else {
+        if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
+          throw new AppError('Debes enviar la nueva cantidad de todas las líneas de la preparación.', 400);
+        }
+        const cantidades = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea.cantidad]));
+        if (datos.lineas.some((linea) => !lineas.some((detalle) => detalle.id_detalle_op === linea.id_detalle_op))) {
+          throw new AppError('Las líneas enviadas no corresponden a esta orden.', 400);
+        }
+        lineasGeneradas = lineas.map((linea) => {
+          const cantidad = cantidades.get(linea.id_detalle_op);
+          if (cantidad === undefined || cantidad <= 0) {
+            throw new AppError('Debes indicar una cantidad mayor que cero para cada producto.', 400);
+          }
+          if (linea.id_producto != null && !Number.isSafeInteger(cantidad)) {
+            throw new AppError(`La cantidad de «${linea.nombre}» debe ser un número entero.`, 400);
+          }
+          return { ...linea, cantidad_estimada: cantidad };
+        });
+        const capacidades = await capacidadesPorLinea(client, lineasGeneradas);
+        for (const linea of lineasGeneradas) {
+          const capacidad = capacidades.find((item) => item.id_detalle_op === linea.id_detalle_op);
+          if (capacidad?.maximo != null && linea.cantidad_estimada > capacidad.maximo) {
+            throw new AppError(
+              `Solo hay insumos para ${capacidad.maximo} ${linea.unidad} de «${linea.nombre}».`,
+              409,
+            );
+          }
+        }
+      }
       // Un 'Pedido' es un encargo de CALENTAMIENTO: sus productos elaborados ya
       // descontaron sus insumos cuando esas unidades se hornearon, así que la
       // fase de descuento no aplica. La marca queda en TRUE para que nadie
       // (completar incluido) intente descontar insumos después.
-      const esPedido = row.tipo === TIPO_PEDIDO;
       const calculo = esPedido
         ? { requeridos: parsearArray(row.insumos_requeridos) }
-        : await descontarInsumos(client, lineas.filter(participaEnInsumos));
+        : await descontarInsumos(client, lineasGeneradas.filter(participaEnInsumos));
+      if (!esPedido) {
+        for (const linea of lineasGeneradas) {
+          const snapshot = await snapshotConsumoLinea(client, linea);
+          const cantidadDebida = cantidadDebidaDesdeSnapshot(linea, snapshot);
+          await client.query(
+            `UPDATE tb_detalle_orden_produccion
+                SET cantidad_estimada = $2, cantidad_debida = $3,
+                    insumos_consumidos = $4::jsonb
+              WHERE id_detalle_op = $1`,
+            [linea.id_detalle_op, linea.cantidad_estimada, cantidadDebida, JSON.stringify(snapshot)],
+          );
+        }
+      }
       const historial = detalleHistoria(row.historial, {
         de: ESTADO_PENDIENTE,
         a: ESTADO_EN_PROCESO,
@@ -538,27 +816,22 @@ export async function iniciarOrdenProduccion(idOrden) {
       await client.query(
         `UPDATE tb_orden_produccion
             SET estado = $2, fecha_en_proceso = now() AT TIME ZONE 'America/Bogota',
-                insumos_requeridos = $3::jsonb, insumos_descontados = TRUE, historial = $4::jsonb
+                fecha_entrega_estimada = $3::timestamp,
+                insumos_requeridos = $4::jsonb, insumos_descontados = TRUE, historial = $5::jsonb
           WHERE id_orden_produccion = $1`,
-        [idOrden, ESTADO_EN_PROCESO, JSON.stringify(calculo.requeridos), JSON.stringify(historial)]
+        [
+          idOrden,
+          ESTADO_EN_PROCESO,
+          datos.fecha_entrega_estimada,
+          JSON.stringify(calculo.requeridos),
+          JSON.stringify(historial),
+        ]
       );
       return (await obtenerOrdenEnConexion(client, idOrden)).orden;
     });
   } catch (error) {
     throw mapearError(error);
   }
-}
-
-async function descontarSiHaceFalta(client, row, lineas) {
-  if (row.insumos_descontados) return { requeridos: parsearArray(row.insumos_requeridos) };
-  const calculo = await descontarInsumos(client, lineas);
-  await client.query(
-    `UPDATE tb_orden_produccion
-        SET insumos_requeridos = $2::jsonb, insumos_descontados = TRUE
-      WHERE id_orden_produccion = $1`,
-    [row.id_orden_produccion, JSON.stringify(calculo.requeridos)]
-  );
-  return calculo;
 }
 
 /** Categoría de un producto del menú para el registro de merma (Pizza, Lasaña…). */
@@ -576,8 +849,11 @@ async function categoriaDeProducto(client, idProducto) {
 export async function completarOrdenProduccion(idOrden, datos) {
   try {
     return await transaction(async (client) => {
+      await actualizarOrdenesPorVerificar(client);
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      if (row.estado !== ESTADO_EN_PROCESO) throw new AppError('Solo se pueden completar órdenes En proceso.', 409);
+      if (row.estado !== ESTADO_POR_VERIFICAR) {
+        throw new AppError('Solo se pueden verificar órdenes Por verificar.', 409);
+      }
 
       if (row.tipo === TIPO_PEDIDO) {
         if (datos.lineas !== null) throw new AppError('La finalización de un pedido no recibe líneas ni cantidades reales.', 400);
@@ -593,41 +869,59 @@ export async function completarOrdenProduccion(idOrden, datos) {
         throw new AppError('Tipo de orden no soportado.', 409);
       }
 
-      // El insumo sólo se descuenta en preparaciones: un pedido ya descontó
-      // (o no aplica) y nunca vuelve a tocar inventario al completarse.
-      if (row.tipo === TIPO_PREPARACION && !row.insumos_descontados) {
-        await descontarSiHaceFalta(client, row, lineas.filter(participaEnInsumos));
-      }
-
-      if (row.tipo === TIPO_PREPARACION && !row.stock_aplicado) {
+      const verificacion = [];
+      if (row.tipo === TIPO_PREPARACION) {
         const cantidades = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea.cantidad_real]));
         for (const linea of lineas) {
           const cantidadReal = cantidades.get(linea.id_detalle_op);
-          const merma = Math.max(0, linea.cantidad_estimada - cantidadReal);
+          const calculadoAlVerificar = linea.cantidad_debida == null;
+          const snapshot = calculadoAlVerificar
+            ? await snapshotConsumoLinea(client, linea)
+            : linea.insumos_consumidos;
+          const calculado = cantidadDebidaDesdeSnapshot(linea, snapshot);
+          if (!calculadoAlVerificar && Math.abs(calculado - Number(linea.cantidad_debida)) > 0.00001) {
+            throw new AppError(`El cálculo guardado de «${linea.nombre}» no coincide con los insumos usados.`, 409);
+          }
+          const cantidadDebida = calculadoAlVerificar
+            ? calculado
+            : Number(linea.cantidad_debida);
+          const merma = Math.max(0, cantidadDebida - cantidadReal);
           // Preparación con línea de producto: lo producido entra como
           // pre-hechas de ese producto del menú (tb_productos.stock).
           const esProducto = linea.id_producto != null;
-          const { rowCount } = esProducto
-            ? await client.query(
-                `UPDATE tb_productos
-                    SET stock = stock + ROUND($2::numeric)::int
-                  WHERE id_producto = $1 AND tipo = 'Elaborado'`,
-                [linea.id_producto, cantidadReal]
-              )
-            : await client.query(
-                `UPDATE tb_insumo
-                    SET stock_actual = stock_actual + $2
-                  WHERE id_insumo = $1 AND tipo = 'Producto insumo'`,
-                [linea.id_insumo, cantidadReal]
-              );
-          if (!rowCount) throw new AppError(`No se pudo actualizar el stock de «${linea.nombre}».`, 409);
+          if (!row.stock_aplicado) {
+            const { rowCount } = esProducto
+              ? await client.query(
+                  `UPDATE tb_productos
+                      SET stock = stock + ROUND($2::numeric)::int
+                    WHERE id_producto = $1 AND tipo = 'Elaborado'`,
+                  [linea.id_producto, cantidadReal]
+                )
+              : await client.query(
+                  `UPDATE tb_insumo
+                      SET stock_actual = stock_actual + $2
+                    WHERE id_insumo = $1 AND tipo = 'Producto insumo'`,
+                  [linea.id_insumo, cantidadReal]
+                );
+            if (!rowCount) throw new AppError(`No se pudo actualizar el stock de «${linea.nombre}».`, 409);
+          }
           await client.query(
             `UPDATE tb_detalle_orden_produccion
-                SET cantidad_real = $2, merma = $3
+                SET cantidad_debida = $2, insumos_consumidos = $3::jsonb,
+                    cantidad_real = $4, merma = $5
               WHERE id_detalle_op = $1`,
-            [linea.id_detalle_op, cantidadReal, merma]
+            [linea.id_detalle_op, cantidadDebida, JSON.stringify(snapshot), cantidadReal, merma]
           );
-          if (merma > 0) {
+          verificacion.push({
+            id_detalle_op: linea.id_detalle_op,
+            producto: linea.nombre,
+            cantidad_estimada_original: linea.cantidad_estimada,
+            cantidad_debida: cantidadDebida,
+            cantidad_real: cantidadReal,
+            merma,
+            origen_calculo: calculadoAlVerificar ? 'calculado_al_verificar' : 'congelado_al_generar',
+          });
+          if (merma > 0 && !row.stock_aplicado) {
             // Merma como producto no conforme (la pantalla CPN solo recarga).
             // No mueve stock: al inventario solo entró la cantidad real. Es un
             // registro del sistema (motivo «Merma de cocina» + orden enlazada),
@@ -650,7 +944,7 @@ export async function completarOrdenProduccion(idOrden, datos) {
                 idOrden,
                 merma,
                 linea.unidad,
-                `Se planificaron ${linea.cantidad_estimada} ${linea.unidad} y se obtuvieron ${cantidadReal} ${linea.unidad}.`.slice(0, 500),
+                `La cantidad estimada original fue ${linea.cantidad_estimada}; se debían hacer ${cantidadDebida} ${linea.unidad} y se obtuvieron ${cantidadReal} ${linea.unidad}.`.slice(0, 500),
                 String(linea.nombre ?? '').slice(0, 200),
                 categoria,
                 String(idOrden),
@@ -661,9 +955,10 @@ export async function completarOrdenProduccion(idOrden, datos) {
       }
 
       const historial = detalleHistoria(row.historial, {
-        de: ESTADO_EN_PROCESO,
+        de: row.estado,
         a: ESTADO_COMPLETADA,
         fechaHora: fechaHoraBogota().timestamp,
+        ...(row.tipo === TIPO_PREPARACION ? { verificacion } : {}),
       });
       await client.query(
         `UPDATE tb_orden_produccion

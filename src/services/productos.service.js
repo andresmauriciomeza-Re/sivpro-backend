@@ -92,7 +92,7 @@ function mapearError(error) {
 
 /**
  * POST /api/productos
- * Elaborado: nace 'Disponible' con el precio pedido.
+ * Todos los productos nacen 'No disponible' porque se crean con stock 0.
  * Reventa: nace SIEMPRE en precio 0, costo 0, stock 0 y 'No disponible',
  * aunque el body traiga otro precio (los campos de compra los pone la entrada
  * de compra).
@@ -125,7 +125,7 @@ export async function crearProducto(datos) {
           datos.imagen,
           esElaborado ? datos.precio_venta : 0,
           datos.precio_grande,
-          esElaborado ? 'Disponible' : 'No disponible',
+          'No disponible',
           datos.contenido,
           datos.contenido_unidad,
           datos.unidad_compra,
@@ -256,12 +256,16 @@ export async function editarProducto(idProducto, datos) {
 
 /**
  * PATCH /api/productos/:id/estado
- * Una bebida recién creada (precio 0) no puede pasar a 'Disponible' antes de
- * que registre su primera compra. 'Descontinuado' nunca se toca por esta ruta.
+ * Los cambios manuales permiten descontinuar o devolver el producto al estado
+ * automático, que el trigger resuelve según el stock.
  */
 export async function cambiarEstadoProducto(idProducto, estado) {
   try {
     return await transaction(async (client) => {
+      if (!['Descontinuado', 'Automático'].includes(estado)) {
+        throw new AppError("El estado debe ser 'Descontinuado' o 'Automático'.", 400);
+      }
+
       const { rows } = await client.query(
         `SELECT id_producto, tipo, precio_venta
            FROM tb_productos
@@ -273,7 +277,7 @@ export async function cambiarEstadoProducto(idProducto, estado) {
       if (!actual) throw new AppError('Producto no encontrado.', 404);
 
       if (
-        estado === 'Disponible' &&
+        estado === 'Automático' &&
         actual.tipo === 'Reventa' &&
         Number(actual.precio_venta) === 0
       ) {
@@ -283,9 +287,10 @@ export async function cambiarEstadoProducto(idProducto, estado) {
         );
       }
 
+      const estadoFinal = estado === 'Automático' ? 'No disponible' : estado;
       await client.query(`UPDATE tb_productos SET estado = $2 WHERE id_producto = $1`, [
         idProducto,
-        estado,
+        estadoFinal,
       ]);
       return await traerProductoGestion(client, idProducto);
     });

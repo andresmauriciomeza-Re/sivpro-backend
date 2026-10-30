@@ -8,6 +8,8 @@ import {
   darBajaOrdenProduccionController,
   eliminarOrdenProduccionController,
   iniciarOrdenProduccionController,
+  obtenerCapacidadProduccionController,
+  obtenerCalculoVerificacionProduccionController,
   listarOrdenesProduccionController,
   obtenerOrdenProduccionController,
   obtenerRequeridosOrdenProduccionController,
@@ -22,6 +24,8 @@ const permisoOrdenes = (privilegio) => requierePermiso({
 });
 
 router.get('/ordenes-produccion', verificarToken, permisoOrdenes('Ver'), listarOrdenesProduccionController);
+router.get('/ordenes-produccion/:id/capacidad', verificarToken, permisoOrdenes('Ver'), obtenerCapacidadProduccionController);
+router.get('/ordenes-produccion/:id/verificacion', verificarToken, permisoOrdenes('Ver'), obtenerCalculoVerificacionProduccionController);
 router.get('/ordenes-produccion/:id/requeridos', verificarToken, permisoOrdenes('Ver'), obtenerRequeridosOrdenProduccionController);
 router.get('/ordenes-produccion/:id', verificarToken, permisoOrdenes('Ver'), obtenerOrdenProduccionController);
 router.post('/ordenes-produccion', verificarToken, permisoOrdenes('Crear'), crearOrdenProduccionController);
