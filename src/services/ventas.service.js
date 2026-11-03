@@ -10,6 +10,8 @@ import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANU
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
+import { notificarEstadoPedido } from './pedidoEmail.service.js';
+import { estadoClientePedido } from '../utils/estadoPedidoCliente.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
 
@@ -276,19 +278,23 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
 
 export async function crearVentaCliente(idUsuario, entrada) {
   try {
-    return await transaction(async (client) => {
+    const venta = await transaction(async (client) => {
       const idCliente = await resolverClienteToken(client, idUsuario);
       return crearVentaEnTransaccion({ client, idCliente, ...entrada });
     });
+    void notificarEstadoPedido(venta.id_venta);
+    return venta;
   } catch (error) { throw mapearError(error); }
 }
 
 export async function crearVentaPanel(datosCliente, entrada) {
   try {
-    return await transaction(async (client) => {
+    const venta = await transaction(async (client) => {
       const idCliente = await resolverOCrearClientePanel(client, datosCliente);
       return crearVentaEnTransaccion({ client, idCliente, ...entrada });
     });
+    void notificarEstadoPedido(venta.id_venta);
+    return venta;
   } catch (error) { throw mapearError(error); }
 }
 
@@ -370,6 +376,9 @@ export async function verificarVenta(idVenta, datos) {
       return { ...actualizadas[0], id_orden_produccion: ordenId };
     });
     if (emailPendiente) void enviarAvisoMontoFaltante(emailPendiente);
+    if (datos.accion === 'aceptar' || datos.accion === 'rechazar') {
+      void notificarEstadoPedido(idVenta);
+    }
     return resultado;
   } catch (error) { throw mapearError(error); }
 }
@@ -397,7 +406,7 @@ const porcentajeReembolso = (motivo) => (motivo === 'Cliente canceló el pedido'
  */
 export async function anularVenta(idVenta, datos) {
   try {
-    return await transaction(async (client) => {
+    const resultado = await transaction(async (client) => {
       const { rows } = await client.query(
         `SELECT v.id_venta, v.fecha, v.monto, v.estado,
                 EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'America/Bogota') - v.fecha)) AS transcurridos
@@ -444,6 +453,8 @@ export async function anularVenta(idVenta, datos) {
       );
       return { ...actualizada[0], id_orden_produccion_cancelada: idOrdenCancelada };
     });
+    void notificarEstadoPedido(idVenta);
+    return resultado;
   } catch (error) { throw mapearError(error); }
 }
 
@@ -456,7 +467,7 @@ export const MOTIVO_CANCELACION_CLIENTE = 'Cliente canceló el pedido';
 
 export async function cancelarVentaCliente(idVenta, idUsuario) {
   try {
-    return await transaction(async (client) => {
+    const resultado = await transaction(async (client) => {
       const { rows } = await client.query(
         `SELECT v.id_venta, v.fecha, v.monto, v.estado,
                 EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'America/Bogota') - v.fecha)) AS transcurridos
@@ -500,6 +511,8 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
       );
       return { ...actualizada[0], id_orden_produccion_cancelada: idOrdenCancelada };
     });
+    void notificarEstadoPedido(idVenta);
+    return resultado;
   } catch (error) { throw mapearError(error); }
 }
 
@@ -769,14 +782,28 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
     `fecha` es timestamp naive de Bogotá, igual que `now() AT TIME ZONE`, así
     que la comparación es directa. Devuelve cuántas ventas avanzaron. */
 export async function avanzarVentasCompletadas() {
-  const { rowCount } = await query(
+  const { rows, rowCount } = await query(
     `UPDATE tb_venta
         SET estado = $1, fecha_estado = now() AT TIME ZONE $2
       WHERE estado = $3
         AND hora_recogida IS NOT NULL
-        AND (fecha::date + hora_recogida + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END) <= now() AT TIME ZONE $2`,
+        AND (fecha::date + hora_recogida + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END) <= now() AT TIME ZONE $2
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM tb_orden_produccion op
+             WHERE op.id_venta = tb_venta.id_venta AND op.tipo = 'Pedido'
+          )
+          OR EXISTS (
+            SELECT 1 FROM tb_orden_produccion op
+             WHERE op.id_venta = tb_venta.id_venta
+               AND op.tipo = 'Pedido'
+               AND op.estado = 'Completada'
+          )
+        )
+      RETURNING id_venta`,
     [ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA.POR_ENTREGAR]
   );
+  for (const venta of rows) void notificarEstadoPedido(venta.id_venta);
   return rowCount;
 }
 
@@ -793,6 +820,7 @@ export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
             v.estado, v.fecha_estado, v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
+            op.estado AS estado_orden,
             d.id_devolucion, d.fecha AS devolucion_fecha,
             d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
             d.monto AS devolucion_monto, d.nota AS devolucion_nota,
@@ -805,12 +833,26 @@ export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
        FROM tb_venta v
        JOIN tb_cliente c ON c.id_cliente = v.id_cliente
        JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
+       LEFT JOIN LATERAL (
+         SELECT o.estado
+           FROM tb_orden_produccion o
+          WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
+          ORDER BY o.id_orden_produccion DESC
+          LIMIT 1
+       ) op ON TRUE
        LEFT JOIN tb_devolucion d ON d.id_venta = v.id_venta
        ${filtro}
       ORDER BY v.fecha DESC, v.id_venta DESC`,
     params
   );
   for (const venta of rows) {
+    venta.estado_cliente = estadoClientePedido({
+      estadoVenta: venta.estado,
+      estadoOrden: venta.estado_orden,
+      tieneOrden: venta.estado_orden != null,
+      anulado_por: venta.anulado_por,
+      motivo_rechazo: venta.motivo_rechazo,
+    });
     const [detalle, pagos] = await Promise.all([
       query(
         `SELECT dv.id_detalle_venta, dv.id_producto, p.nombre, p.imagen,

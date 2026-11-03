@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PASOS_PEDIDO } from './estadoPedidoCliente.js';
 
 const RUTA_LOGO = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -263,6 +264,180 @@ export function buildMontoFaltanteEmail({ id, nombre, total, pagado, faltante, q
   };
 }
 
+export function buildEstadoPedidoEmail({
+  nombre,
+  id,
+  estado,
+  productos = [],
+  total,
+  horaRecogida,
+  motivo,
+  montoReembolso,
+}) {
+  const nombreCompleto = String(nombre || '').trim() || 'cliente';
+  const idTexto = String(id);
+  const nombreSeguro = escaparHtml(nombreCompleto);
+  const totalTexto = new Intl.NumberFormat('es-CO', {
+    style: 'currency',
+    currency: 'COP',
+    maximumFractionDigits: 0,
+  }).format(Number(total) || 0);
+  const reembolsoTexto = montoReembolso == null
+    ? null
+    : new Intl.NumberFormat('es-CO', {
+        style: 'currency',
+        currency: 'COP',
+        maximumFractionDigits: 0,
+      }).format(Number(montoReembolso) || 0);
+  const numeroSeguro = escaparHtml(idTexto);
+  const local = datosDelLocal();
+  const urlPedidos = escaparHtml(urlDelFrontend().split(',')[0].trim().replace(/\/+$/, ''));
+  const mensajes = {
+    Pendiente: {
+      subject: `Recibimos tu pedido #${idTexto}`,
+      mensaje: 'Estamos verificando tu pago.',
+    },
+    Aceptado: {
+      subject: `Tu pago fue aceptado – Pedido #${idTexto}`,
+      mensaje: 'Tu pago fue aceptado y tu pedido entra a cocina.',
+    },
+    'En proceso': {
+      subject: `Tu pedido #${idTexto} se está preparando`,
+      mensaje: 'Nuestro equipo de cocina está preparando tu pedido.',
+    },
+    'Por entregar': {
+      subject: `¡Tu pedido #${idTexto} está listo para recoger!`,
+      mensaje: horaRecogida
+        ? `Tu pedido está listo para recoger. Te esperamos a las ${horaRecogida}.`
+        : 'Tu pedido está listo para recoger.',
+    },
+    Completado: {
+      subject: `Gracias por tu compra – Pedido #${idTexto}`,
+      mensaje: 'Tu pedido fue entregado. ¡Gracias por elegir Pizzería La Sirena!',
+    },
+    Rechazado: {
+      subject: `Tu pedido #${idTexto} fue rechazado`,
+      mensaje: 'No pudimos validar el comprobante de pago de tu pedido.',
+    },
+    Anulado: {
+      subject: `Tu pedido #${idTexto} fue anulado`,
+      mensaje: 'Tu pedido fue anulado.',
+    },
+  };
+  const contenidoEstado = mensajes[estado] ?? {
+    subject: `Actualización de tu pedido #${idTexto}`,
+    mensaje: `El estado de tu pedido cambió a ${estado}.`,
+  };
+  const motivoTexto = estado === 'Rechazado' || estado === 'Anulado'
+    ? String(motivo || '').trim()
+    : '';
+  const productosLimpios = productos.map((producto) => ({
+    nombre: String(producto.nombre || 'Producto'),
+    tamano: producto.tamano == null ? '' : String(producto.tamano),
+    cantidad: Number(producto.cantidad) || 0,
+  }));
+  const resumenTexto = productosLimpios.length
+    ? productosLimpios.map((producto) =>
+        `• ${producto.nombre}${producto.tamano ? ` (${producto.tamano})` : ''} × ${producto.cantidad}`,
+      ).join('\n')
+    : 'No hay productos registrados para este pedido.';
+  const filasProductos = productosLimpios.length
+    ? productosLimpios.map((producto) => `
+        <tr>
+          <td style="padding:10px 14px;font-size:14px;color:#444444;border-bottom:1px solid #eeeeee;">
+            ${escaparHtml(producto.nombre)}${producto.tamano ? ` <span style="color:#777777;">(${escaparHtml(producto.tamano)})</span>` : ''}
+          </td>
+          <td align="right" style="padding:10px 14px;font-size:14px;color:#222222;border-bottom:1px solid #eeeeee;">
+            ${escaparHtml(producto.cantidad)}
+          </td>
+        </tr>`).join('')
+    : '<tr><td style="padding:10px 14px;font-size:14px;color:#777777;">No hay productos registrados para este pedido.</td></tr>';
+  const indiceActual = PASOS_PEDIDO.indexOf(estado);
+  const progreso = `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 0;">
+      <tr>
+        ${PASOS_PEDIDO.map((paso, indice) => {
+          const actual = indice === indiceActual;
+          const completado = indiceActual >= 0 && indice < indiceActual;
+          const color = actual ? '#E31E24' : completado ? '#2E9E3E' : '#d1d5db';
+          const textoColor = indiceActual < 0 ? '#777777' : actual ? '#C62828' : completado ? '#267d32' : '#777777';
+          return `
+            <td align="center" valign="top" width="20%" style="padding:0 2px;">
+              <div style="width:24px;height:24px;line-height:24px;margin:0 auto 6px;border-radius:50%;background-color:${color};color:#ffffff;font-size:13px;font-weight:bold;">${actual || completado ? '✓' : indice + 1}</div>
+              <div style="font-size:10px;line-height:1.3;color:${textoColor};${actual ? 'font-weight:bold;' : ''}">${escaparHtml(paso)}</div>
+            </td>`;
+        }).join('')}
+      </tr>
+    </table>`;
+  const detallesExtra = [
+    motivoTexto ? `<p style="margin:10px 0 0;font-size:14px;color:#555555;"><strong>Motivo:</strong> ${escaparHtml(motivoTexto)}</p>` : '',
+    estado === 'Anulado' && reembolsoTexto
+      ? `<p style="margin:6px 0 0;font-size:14px;color:#555555;"><strong>Valor a devolver:</strong> ${escaparHtml(reembolsoTexto)}</p>`
+      : '',
+  ].join('');
+  const subject = contenidoEstado.subject;
+  const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light only"><title>${escaparHtml(subject)}</title></head>
+<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 12px;"><tr><td align="center">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;">
+      ${encabezadoCompartido()}
+      <tr><td style="padding:32px 28px 8px;color:#222222;">
+        <h1 style="margin:0 0 12px;font-size:22px;">Hola ${nombreSeguro},</h1>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:#555555;">${escaparHtml(contenidoEstado.mensaje)}</p>
+        ${detallesExtra}
+      </td></tr>
+      <tr><td style="padding:20px 28px 8px;">
+        <p style="margin:0 0 8px;font-size:15px;font-weight:bold;color:#222222;">Seguimiento de tu pedido</p>
+        ${progreso}
+        <p style="margin:10px 0 0;text-align:center;font-size:13px;color:#555555;">Estado actual: <strong>${escaparHtml(estado)}</strong></p>
+      </td></tr>
+      <tr><td style="padding:16px 28px 24px;">
+        <p style="margin:0 0 8px;font-size:15px;font-weight:bold;color:#222222;">Resumen del pedido #${numeroSeguro}</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eeeeee;border-collapse:collapse;background-color:#fafafa;">
+          ${filasProductos}
+          <tr><td style="padding:12px 14px;font-size:14px;color:#222222;border-top:2px solid #eeeeee;"><strong>Total</strong></td><td align="right" style="padding:12px 14px;font-size:14px;color:#222222;border-top:2px solid #eeeeee;"><strong>${escaparHtml(totalTexto)}</strong></td></tr>
+        </table>
+        ${estado === 'Por entregar' && horaRecogida
+          ? `<p style="margin:12px 0 0;font-size:14px;color:#555555;">Hora de recogida: <strong>${escaparHtml(horaRecogida)}</strong></p>`
+          : ''}
+        <p style="margin:16px 0 0;text-align:center;"><a href="${urlPedidos}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:14px;font-weight:bold;text-decoration:none !important;padding:12px 24px;border-radius:9px;">Ver mis pedidos</a></p>
+      </td></tr>
+      ${pieCompartido()}
+    </table>
+  </td></tr></table>
+</body></html>`.trim();
+  const text = [
+    `Hola ${nombreCompleto},`,
+    '',
+    contenidoEstado.mensaje,
+    `Estado actual: ${estado}`,
+    '',
+    `Resumen del pedido #${idTexto}:`,
+    resumenTexto,
+    `Total: ${totalTexto}`,
+    ...(estado === 'Por entregar' && horaRecogida ? [`Hora de recogida: ${horaRecogida}`] : []),
+    ...(motivoTexto ? [`Motivo: ${motivoTexto}`] : []),
+    ...(estado === 'Anulado' && reembolsoTexto ? [`Valor a devolver: ${reembolsoTexto}`] : []),
+    '',
+    `Consulta tus pedidos: ${urlPedidos}`,
+    '',
+    'Gracias por elegir Pizzería La Sirena.',
+    '',
+    '© 2026 Pizzería La Sirena · S.I.V.PRO',
+    local.direccion,
+    `Si tienes dudas, comunícate con nosotros al ${local.telefono}.`,
+  ].join('\n');
+  return {
+    subject,
+    html,
+    text,
+    attachments: [{ filename: 'logo.png', path: RUTA_LOGO, cid: 'logo-sivpro' }],
+  };
+}
+
 // ─────────────────────── ENCABEZADO Y PIE COMPARTIDOS ───────────────────────
 // Los 3 correos (bienvenida, código de recuperación y contraseña cambiada)
 // usan EXACTAMENTE este encabezado y este pie: fondo verde oscuro #14532d
@@ -313,7 +488,7 @@ function pieCompartido() {
           </tr>`;
 }
 
-const PASOS_PEDIDO = [
+const PASOS_BIENVENIDA = [
   'Elige tus pizzas, lasañas o bebidas en nuestra página.',
   'Realiza el pago anticipado por Nequi o Bancolombia y sube el comprobante.',
   'Verificamos tu pago y preparamos tu pedido.',
@@ -372,7 +547,7 @@ export function buildWelcomeEmail(datos) {
             </tr>`;
   };
 
-  const filasPasos = PASOS_PEDIDO.map(
+  const filasPasos = PASOS_BIENVENIDA.map(
     (paso, i) => `
             <tr>
               <td width="34" valign="top" style="padding:6px 10px 6px 0;">
@@ -487,7 +662,7 @@ export function buildWelcomeEmail(datos) {
     `- Fecha de registro: ${fechaRegistro}`,
     '',
     '¿Cómo hacer tu pedido?',
-    ...PASOS_PEDIDO.map((paso, i) => `${i + 1}. ${paso}`),
+    ...PASOS_BIENVENIDA.map((paso, i) => `${i + 1}. ${paso}`),
     '',
     ...(datos?.creadoPorAdmin ? ['Para entrar, usa “¿Olvidaste tu contraseña?” en el inicio de sesión.'] : []),
     `Hacer mi primer pedido: ${frontendUrl}`,

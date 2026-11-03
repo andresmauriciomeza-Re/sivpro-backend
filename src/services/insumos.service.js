@@ -274,7 +274,7 @@ export async function crearInsumo(datos) {
       let lineasPreparadas = [];
       let totalFicha = 0;
       if (datos.tipo === 'Producto insumo') {
-        const validacion = await cargarInsumosFicha(client, datos.ficha, { bloquearStock: true });
+        const validacion = await cargarInsumosFicha(client, datos.ficha, { bloquearStock: false });
         lineasPreparadas = validacion.lineas;
         totalFicha = validacion.total;
       }
@@ -322,7 +322,8 @@ export async function crearInsumo(datos) {
               observacion: null,
               lineas: [{ id_insumo: idInsumo, cantidad: datos.ficha.cantidad }],
             },
-            'Creada desde Insumos'
+            'Creada desde Insumos',
+            { validarStock: false }
           );
         }
       }

@@ -2,14 +2,30 @@ import AppError from '../errors/AppError.js';
 import { pool, query, transaction } from '../config/db.js';
 import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/produccion.js';
 import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
+import { notificarEstadoPedido } from './pedidoEmail.service.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
 const ESTADO_EN_PROCESO = 'En proceso';
-const ESTADO_POR_VERIFICAR = 'Por verificar';
 const ESTADO_COMPLETADA = 'Completada';
 const ESTADO_CANCELADA = 'Cancelada';
 const TIPO_PREPARACION = 'Preparacion';
 const TIPO_PEDIDO = 'Pedido';
+
+export const TRANSICIONES = {
+  [ESTADO_PENDIENTE]: [ESTADO_EN_PROCESO, ESTADO_CANCELADA],
+  [ESTADO_EN_PROCESO]: [ESTADO_COMPLETADA, ESTADO_CANCELADA],
+  [ESTADO_COMPLETADA]: [],
+  [ESTADO_CANCELADA]: [],
+};
+
+export function validarTransicion(actual, destino) {
+  if (!TRANSICIONES[actual]?.includes(destino)) {
+    throw new AppError(
+      `No se puede pasar de «${actual}» a «${destino}»: una orden no vuelve a un estado anterior.`,
+      409,
+    );
+  }
+}
 
 function mapearError(error) {
   if (error instanceof AppError) return error;
@@ -133,34 +149,6 @@ async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}
   if (!rows[0]) throw new AppError('Orden de producción no encontrada.', 404);
   const lineas = await cargarLineasOrden(client, idOrden);
   return { row: rows[0], orden: mapearOrden(rows[0], lineas), lineas };
-}
-
-export async function actualizarOrdenesPorVerificar(client) {
-  await client.query(
-    `WITH ahora AS (
-       SELECT CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota' AS fecha_hora
-     )
-     UPDATE tb_orden_produccion AS op
-        SET estado = $1::text,
-            historial = COALESCE(op.historial, '[]'::jsonb) || jsonb_build_array(
-              jsonb_build_object(
-                'de', op.estado,
-                'a', $1::text,
-                'fechaHora', to_char(ahora.fecha_hora, 'YYYY-MM-DD HH24:MI:SS'),
-                'actor', 'Sistema',
-                'accion', 'cambio_automatico_a_por_verificar',
-                'detalle', CASE
-                  WHEN op.fecha_entrega_estimada IS NULL
-                    THEN 'Orden antigua sin fecha límite enviada a verificación.'
-                  ELSE 'Fecha límite vencida; orden enviada a verificación.'
-                END
-              )
-            )
-       FROM ahora
-      WHERE op.estado = $2::text
-        AND (op.fecha_entrega_estimada IS NULL OR op.fecha_entrega_estimada <= ahora.fecha_hora)`,
-    [ESTADO_POR_VERIFICAR, ESTADO_EN_PROCESO],
-  );
 }
 
 async function validarFechaLimite(client, row, fechaLimite) {
@@ -453,14 +441,21 @@ async function insertarDetallesPreparacion(client, idOrden, recetas) {
 }
 
 /** Comparte creación transaccional para POST /ordenes-produccion y alta desde Insumos. */
-export async function crearPreparacionEnTransaccion(client, datos, detalleInicial = null) {
+export async function crearPreparacionEnTransaccion(
+  client,
+  datos,
+  detalleInicial = null,
+  { validarStock = true } = {},
+) {
   const fechaSolicitada = datos.fecha_solicitada ?? fechaHoraBogota().fecha;
   validarFechaNoPasada(fechaSolicitada);
   const { calculo, detalle } = await prepararLineas(client, datos.lineas, {
     bloquearInsumos: true,
     requiereFichaProducto: true,
   });
-  lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
+  if (validarStock) {
+    lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
+  }
 
   const momento = fechaHoraBogota();
   const historial = [{ de: null, a: ESTADO_PENDIENTE, fechaHora: momento.timestamp, detalle: detalleInicial }];
@@ -491,7 +486,12 @@ export async function crearPreparacionEnTransaccion(client, datos, detalleInicia
 async function crearPreparacion(datos) {
   try {
     return await transaction(async (client) => {
-      const creado = await crearPreparacionEnTransaccion(client, datos);
+      const creado = await crearPreparacionEnTransaccion(
+        client,
+        datos,
+        null,
+        { validarStock: datos.validar_stock !== false },
+      );
       return (await obtenerOrdenEnConexion(client, creado.id_orden_produccion)).orden;
     });
   } catch (error) {
@@ -500,7 +500,6 @@ async function crearPreparacion(datos) {
 }
 
 export async function listarOrdenesProduccion(filtros) {
-  await actualizarOrdenesPorVerificar(pool);
   const condiciones = [];
   const valores = [];
   if (filtros.estado !== undefined) {
@@ -533,7 +532,6 @@ export async function listarOrdenesProduccion(filtros) {
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
-  await actualizarOrdenesPorVerificar(pool);
   const { orden } = await obtenerOrdenEnConexion(pool, idOrden);
   return orden;
 }
@@ -715,10 +713,9 @@ export async function obtenerCapacidadProduccion(idOrden) {
 export async function obtenerCalculoVerificacionProduccion(idOrden) {
   try {
     return await transaction(async (client) => {
-      await actualizarOrdenesPorVerificar(client);
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden);
-      if (row.estado !== ESTADO_POR_VERIFICAR) {
-        throw new AppError('Solo se puede consultar el cálculo de órdenes Por verificar.', 409);
+      if (row.estado !== ESTADO_EN_PROCESO) {
+        throw new AppError('Solo se puede consultar el cálculo de órdenes En proceso.', 409);
       }
       if (row.tipo === TIPO_PEDIDO) return { lineas: [] };
       return {
@@ -750,9 +747,9 @@ export async function obtenerCalculoVerificacionProduccion(idOrden) {
 
 export async function iniciarOrdenProduccion(idOrden, datos) {
   try {
-    return await transaction(async (client) => {
+    const resultado = await transaction(async (client) => {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      if (row.estado !== ESTADO_PENDIENTE) throw new AppError('Solo se pueden iniciar órdenes Pendientes.', 409);
+      validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
       await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
       let lineasGeneradas = lineas;
@@ -827,8 +824,13 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
           JSON.stringify(historial),
         ]
       );
-      return (await obtenerOrdenEnConexion(client, idOrden)).orden;
+      return {
+        orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
+        idVenta: esPedido ? row.id_venta : null,
+      };
     });
+    if (resultado.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    return resultado.orden;
   } catch (error) {
     throw mapearError(error);
   }
@@ -848,12 +850,9 @@ async function categoriaDeProducto(client, idProducto) {
 
 export async function completarOrdenProduccion(idOrden, datos) {
   try {
-    return await transaction(async (client) => {
-      await actualizarOrdenesPorVerificar(client);
+    const resultado = await transaction(async (client) => {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      if (row.estado !== ESTADO_POR_VERIFICAR) {
-        throw new AppError('Solo se pueden verificar órdenes Por verificar.', 409);
-      }
+      validarTransicion(row.estado, ESTADO_COMPLETADA);
 
       if (row.tipo === TIPO_PEDIDO) {
         if (datos.lineas !== null) throw new AppError('La finalización de un pedido no recibe líneas ni cantidades reales.', 400);
@@ -968,8 +967,13 @@ export async function completarOrdenProduccion(idOrden, datos) {
           WHERE id_orden_produccion = $1`,
         [idOrden, ESTADO_COMPLETADA, JSON.stringify(historial)]
       );
-      return (await obtenerOrdenEnConexion(client, idOrden)).orden;
+      return {
+        orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
+        idVenta: row.tipo === TIPO_PEDIDO ? row.id_venta : null,
+      };
     });
+    if (resultado.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    return resultado.orden;
   } catch (error) {
     throw mapearError(error);
   }
@@ -979,9 +983,7 @@ export async function darBajaOrdenProduccion(idOrden, datos) {
   try {
     return await transaction(async (client) => {
       const { row } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      if (![ESTADO_PENDIENTE, ESTADO_EN_PROCESO].includes(row.estado)) {
-        throw new AppError('Solo se pueden dar de baja órdenes Pendientes o En proceso.', 409);
-      }
+      validarTransicion(row.estado, ESTADO_CANCELADA);
       const historial = detalleHistoria(row.historial, {
         de: row.estado,
         a: ESTADO_CANCELADA,
