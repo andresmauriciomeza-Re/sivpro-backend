@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import AppError from '../src/errors/AppError.js';
-import { validarCompletarOrdenProduccion } from '../src/validators/ordenesProduccion.validator.js';
+import {
+  validarCompletarOrdenProduccion,
+  validarCrearOrdenProduccion,
+} from '../src/validators/ordenesProduccion.validator.js';
+
+const ordenPreparacionValida = { lineas: [{ id_producto: 7, cantidad: 3 }] };
+
+test('la creación de una orden valida stock por defecto y permite desactivarlo explícitamente', () => {
+  assert.equal(validarCrearOrdenProduccion(ordenPreparacionValida).validar_stock, true);
+  assert.equal(
+    validarCrearOrdenProduccion({ ...ordenPreparacionValida, validar_stock: false }).validar_stock,
+    false,
+  );
+});
+
+test('validar_stock debe ser booleano al crear una orden', () => {
+  assert.throws(
+    () => validarCrearOrdenProduccion({ ...ordenPreparacionValida, validar_stock: 'false' }),
+    (error) => error instanceof AppError && error.statusCode === 400,
+  );
+});
 
 test('la verificación solo acepta cantidades reales y descarta cantidad debida enviada por el cliente', () => {
   const resultado = validarCompletarOrdenProduccion({

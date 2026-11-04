@@ -1,6 +1,6 @@
 import AppError from '../errors/AppError.js';
 
-const ESTADOS = ['Pendiente', 'En proceso', 'Por verificar', 'Completada', 'Cancelada'];
+const ESTADOS = ['Pendiente', 'En proceso', 'Completada', 'Cancelada'];
 const TIPOS = ['Preparacion', 'Pedido'];
 
 function numero(valor, campo) {
@@ -127,8 +127,12 @@ export function validarCrearOrdenProduccion(body) {
   if (entrada.tipo !== undefined && entrada.tipo !== 'Preparacion') {
     throw new AppError("Solo se pueden crear órdenes de tipo 'Preparacion' desde esta ruta.", 400);
   }
+  if (entrada.validar_stock !== undefined && typeof entrada.validar_stock !== 'boolean') {
+    throw new AppError('El campo validar_stock debe ser booleano.', 400);
+  }
   return {
     tipo: 'Preparacion',
+    validar_stock: entrada.validar_stock ?? true,
     fecha_solicitada:
       entrada.fecha_solicitada == null || entrada.fecha_solicitada === ''
         ? null

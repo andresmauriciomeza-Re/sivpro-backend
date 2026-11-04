@@ -8,6 +8,7 @@ import {
   buildVerificacionCorreoEmail,
   buildWelcomeEmail,
   buildMontoFaltanteEmail,
+  buildEstadoPedidoEmail,
 } from '../utils/emailTemplates.js';
 
 let transporte = null;
@@ -297,6 +298,33 @@ export async function enviarAvisoMontoFaltante(datos) {
     console.log(`Aviso de monto faltante enviado a ${correo}`);
   } catch (error) {
     console.error(`No se pudo enviar aviso de saldo pendiente a ${correo}: ${error?.code || error?.message || error}`);
+  }
+}
+
+export async function enviarEstadoPedido(datos) {
+  const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
+  if (!correo) {
+    console.error(`Correo de estado omitido: el pedido ${datos?.id ?? '?'} no tiene correo de destino`);
+    return;
+  }
+  if (!hayCredenciales()) {
+    console.log(`Correo no configurado (MAIL_USER / MAIL_PASS): estado del pedido ${datos?.id ?? '?'} omitido`);
+    return;
+  }
+  try {
+    const mail = buildEstadoPedidoEmail(datos);
+    await obtenerTransporte().sendMail({
+      from: `"Pizzería La Sirena" <${process.env.MAIL_USER}>`,
+      replyTo: process.env.MAIL_REPLY_TO || process.env.MAIL_USER,
+      to: correo,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      attachments: mail.attachments,
+    });
+    console.log(`Correo de estado ${datos.estado} enviado para el pedido ${datos.id}`);
+  } catch (error) {
+    console.error(`No se pudo enviar el correo de estado del pedido ${datos?.id ?? '?'}: ${error?.code || error?.message || error}`);
   }
 }
 
