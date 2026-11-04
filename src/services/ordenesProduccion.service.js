@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import { pool, query, transaction } from '../config/db.js';
 import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/produccion.js';
 import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
+import { validarInsumosActivos } from '../utils/validarInsumosActivos.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
@@ -453,6 +454,7 @@ export async function crearPreparacionEnTransaccion(
     bloquearInsumos: true,
     requiereFichaProducto: true,
   });
+  validarInsumosActivos(calculo.faltantes, 400);
   if (validarStock) {
     lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
   }
@@ -755,6 +757,12 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       let lineasGeneradas = lineas;
       if (esPedido) {
         if (datos.lineas !== undefined) throw new AppError('No se puede cambiar la cantidad de un Pedido.', 400);
+        const calculoActivo = await calcularRequeridosProduccion(
+          client,
+          lineasGeneradas.filter(participaEnInsumos),
+          { bloquearInsumos: true },
+        );
+        validarInsumosActivos(calculoActivo.faltantes, 409);
       } else {
         if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
           throw new AppError('Debes enviar la nueva cantidad de todas las líneas de la preparación.', 400);
@@ -773,6 +781,12 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
           }
           return { ...linea, cantidad_estimada: cantidad };
         });
+        const calculoActivo = await calcularRequeridosProduccion(
+          client,
+          lineasGeneradas.filter(participaEnInsumos),
+          { bloquearInsumos: true },
+        );
+        validarInsumosActivos(calculoActivo.faltantes, 409);
         const capacidades = await capacidadesPorLinea(client, lineasGeneradas);
         for (const linea of lineasGeneradas) {
           const capacidad = capacidades.find((item) => item.id_detalle_op === linea.id_detalle_op);
