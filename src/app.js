@@ -19,6 +19,7 @@ import productosNoConformesRouter from './routes/productosNoConformes.routes.js'
 import proveedoresRouter from './routes/proveedores.routes.js';
 import ordenesCompraRouter from './routes/ordenesCompra.routes.js';
 import comprasRouter from './routes/compras.routes.js';
+import parametrosCostosRouter from './routes/parametrosCostos.routes.js';
 
 const app = express();
 
@@ -64,6 +65,7 @@ app.use('/api', productosNoConformesRouter);
 app.use('/api', proveedoresRouter);
 app.use('/api', ordenesCompraRouter);
 app.use('/api', comprasRouter);
+app.use('/api', parametrosCostosRouter);
 
 app.use((req, res) => {
   res.status(404).json({
