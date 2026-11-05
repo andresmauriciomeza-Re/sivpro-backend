@@ -9,6 +9,7 @@ import {
   listarMisVentasController,
   listarVentasController,
   marcarDevolucionController,
+  obtenerMiVentaController,
   obtenerVentaController,
   resolverDevolucionController,
   subirComprobanteController,
@@ -25,6 +26,7 @@ const permisoVentas = (privilegio) => requierePermiso({
 
 router.post('/ventas', verificarToken, crearVentaClienteController);
 router.get('/ventas/mias', verificarToken, listarMisVentasController);
+router.get('/ventas/mias/:id', verificarToken, obtenerMiVentaController);
 router.post('/ventas/panel', verificarToken, permisoVentas('Crear'), crearVentaPanelController);
 router.get('/ventas', verificarToken, permisoVentas('Ver'), listarVentasController);
 router.get('/ventas/:id', verificarToken, permisoVentas('Ver'), obtenerVentaController);

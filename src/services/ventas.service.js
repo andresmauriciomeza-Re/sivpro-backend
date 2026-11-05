@@ -807,7 +807,21 @@ export async function avanzarVentasCompletadas() {
   return rowCount;
 }
 
-export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
+export function agruparFilasPorId(rows, campoId) {
+  const agrupadas = new Map();
+  for (const row of rows) {
+    const id = String(row[campoId]);
+    if (!agrupadas.has(id)) agrupadas.set(id, []);
+    agrupadas.get(id).push(row);
+  }
+  return agrupadas;
+}
+
+export async function listarVentas({
+  idUsuario = null,
+  idVenta = null,
+  incluirComprobantes = false,
+} = {}) {
   // El avance por hora se resuelve aquí mismo (pull perezoso): la lista que se
   // va a devolver ya trae las ventas cuya hora de recogida ya pasó.
   await avanzarVentasCompletadas();
@@ -845,6 +859,52 @@ export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
       ORDER BY v.fecha DESC, v.id_venta DESC`,
     params
   );
+  if (!rows.length) return rows;
+
+  const idsVentas = rows.map((venta) => Number(venta.id_venta));
+  const [detalles, pagos] = await Promise.all([
+    query(
+      `SELECT dv.id_venta AS _id_venta,
+              dv.id_detalle_venta, dv.id_producto, p.nombre, p.imagen,
+              dv.cantidad, dv.precio_unitario, dv.sub_total, dv.tamano
+         FROM tb_detalle_venta dv JOIN tb_productos p ON p.id_producto = dv.id_producto
+        WHERE dv.id_venta = ANY($1)
+        ORDER BY dv.id_venta, dv.id_detalle_venta`,
+      [idsVentas]
+    ),
+    query(
+      `SELECT id_venta AS _id_venta, id_pago, tipo, fecha,
+              ${incluirComprobantes ? 'comprobante,' : ''}
+              (comprobante IS NOT NULL) AS tiene_comprobante,
+              cantidad_pagar, depositado, faltante, estado
+         FROM tb_pagos
+        WHERE id_venta = ANY($1)
+        ORDER BY id_venta, id_pago`,
+      [idsVentas]
+    ),
+  ]);
+  const detallesPorVenta = agruparFilasPorId(detalles.rows, '_id_venta');
+  const pagosPorVenta = agruparFilasPorId(pagos.rows, '_id_venta');
+
+  const idsDevoluciones = rows
+    .map((venta) => venta.id_devolucion)
+    .filter((id) => id != null)
+    .map(Number);
+  const devolucionLineasPorId = new Map();
+  if (idsDevoluciones.length) {
+    const { rows: lineasDevolucion } = await query(
+      `SELECT dd.id_devolucion AS _id_devolucion,
+              dd.id_detalle_venta, dd.motivo, dd.descripcion_motivo
+         FROM tb_detalle_devolucion dd
+        WHERE dd.id_devolucion = ANY($1)
+        ORDER BY dd.id_devolucion, dd.id_detalle_dev`,
+      [idsDevoluciones]
+    );
+    for (const [id, lineas] of agruparFilasPorId(lineasDevolucion, '_id_devolucion')) {
+      devolucionLineasPorId.set(id, lineas);
+    }
+  }
+
   for (const venta of rows) {
     venta.estado_cliente = estadoClientePedido({
       estadoVenta: venta.estado,
@@ -853,34 +913,43 @@ export async function listarVentas({ idUsuario = null, idVenta = null } = {}) {
       anulado_por: venta.anulado_por,
       motivo_rechazo: venta.motivo_rechazo,
     });
-    const [detalle, pagos] = await Promise.all([
-      query(
-        `SELECT dv.id_detalle_venta, dv.id_producto, p.nombre, p.imagen,
-                dv.cantidad, dv.precio_unitario, dv.sub_total, dv.tamano
-           FROM tb_detalle_venta dv JOIN tb_productos p ON p.id_producto = dv.id_producto
-          WHERE dv.id_venta = $1 ORDER BY dv.id_detalle_venta`,
-        [venta.id_venta]
-      ),
-      query(
-        `SELECT id_pago, tipo, fecha, comprobante, cantidad_pagar, depositado, faltante, estado
-           FROM tb_pagos WHERE id_venta = $1 ORDER BY id_pago`,
-        [venta.id_venta]
-      ),
-    ]);
-    venta.detalles = detalle.rows;
-    venta.pagos = pagos.rows;
+    venta.detalles = (detallesPorVenta.get(String(venta.id_venta)) ?? []).map(
+      ({ _id_venta: _id, ...detalle }) => detalle
+    );
+    venta.pagos = (pagosPorVenta.get(String(venta.id_venta)) ?? []).map(
+      ({ _id_venta: _id, ...pago }) => pago
+    );
     // Motivos por línea de la devolución (si la venta tiene una), en el mismo
     // formato que usa el panel y "Mis pedidos": { [índice de línea]: motivo }.
     if (venta.id_devolucion) {
-      const { rows: lineasDev } = await query(
-        `SELECT dd.id_detalle_venta, dd.motivo, dd.descripcion_motivo
-           FROM tb_detalle_devolucion dd
-          WHERE dd.id_devolucion = $1
-          ORDER BY dd.id_detalle_dev`,
-        [venta.id_devolucion]
+      venta.devolucion_lineas = (
+        devolucionLineasPorId.get(String(venta.id_devolucion)) ?? []
+      ).map(
+        ({ _id_devolucion: _id, ...linea }) => linea
       );
-      venta.devolucion_lineas = lineasDev;
     }
   }
   return rows;
+}
+
+export async function obtenerVentaCliente(idUsuario, idVenta) {
+  const { rows } = await query(
+    `SELECT c.id_usuario
+       FROM tb_venta v
+       JOIN tb_cliente c ON c.id_cliente = v.id_cliente
+      WHERE v.id_venta = $1`,
+    [idVenta]
+  );
+  if (!rows[0]) throw new AppError('Venta no encontrada.', 404);
+  if (String(rows[0].id_usuario) !== String(idUsuario)) {
+    throw new AppError('No tienes permiso para ver el comprobante de esta venta.', 403);
+  }
+
+  const ventas = await listarVentas({
+    idUsuario,
+    idVenta,
+    incluirComprobantes: true,
+  });
+  if (!ventas[0]) throw new AppError('Venta no encontrada.', 404);
+  return ventas[0];
 }

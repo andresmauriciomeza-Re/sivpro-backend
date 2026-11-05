@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { pool } from '../src/config/db.js';
-import { crearVentaCliente } from '../src/services/ventas.service.js';
+import { crearVentaCliente, obtenerVentaCliente } from '../src/services/ventas.service.js';
 
 function crearBaseSimulada({ usuario, perfil = null }) {
   const base = {
@@ -166,6 +166,19 @@ test('cliente normal con perfil activo puede comprar', async (t) => {
   assert.equal(venta.id_cliente, 10);
   assert.equal(base.insercionesCliente, 0);
   assert.equal(base.reactivacionesCliente, 0);
+});
+
+test('cliente recibe 403 al solicitar el comprobante de una venta ajena', async (t) => {
+  t.mock.method(pool, 'query', async (sql, params) => {
+    assert.match(sql, /from tb_venta v\s+join tb_cliente c/i);
+    assert.deepEqual(params, [42]);
+    return { rows: [{ id_usuario: 'otro-cliente' }] };
+  });
+
+  await assert.rejects(
+    obtenerVentaCliente('cliente-1', 42),
+    (error) => error.statusCode === 403,
+  );
 });
 
 test('empleado con ficha y contratación vigentes puede comprar con su perfil activo', async (t) => {

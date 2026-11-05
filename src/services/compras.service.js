@@ -17,6 +17,42 @@ function mapearError(error) {
   return new AppError('No se pudo completar la operación de compras.', 503);
 }
 
+export function agruparFilasPorId(rows, campoId) {
+  const agrupadas = new Map();
+  for (const row of rows) {
+    const id = String(row[campoId]);
+    if (!agrupadas.has(id)) agrupadas.set(id, []);
+    agrupadas.get(id).push(row);
+  }
+  return agrupadas;
+}
+
+function mapearDetalleCompra(detalle) {
+  return {
+    ...detalle,
+    id_dcompra: Number(detalle.id_dcompra),
+    id_compra: Number(detalle.id_compra),
+    id_insumo: detalle.id_insumo == null ? null : Number(detalle.id_insumo),
+    id_producto: detalle.id_producto == null ? null : Number(detalle.id_producto),
+    cantidad: Number(detalle.cantidad),
+    precio_unitario: Number(detalle.precio_unitario),
+    iva: Number(detalle.iva),
+    base_sin_iva: Number(detalle.base_sin_iva),
+    monto_iva: Number(detalle.monto_iva),
+    subtotal: Number(detalle.subtotal),
+  };
+}
+
+function mapearCompra(row, detalles) {
+  const compra = { ...row };
+  for (const campo of ['id_compra', 'id_ocompra', 'id_proveedor']) {
+    compra[campo] = compra[campo] == null ? null : Number(compra[campo]);
+  }
+  for (const campo of ['subtotal_sin_iva', 'total_iva', 'total']) compra[campo] = Number(compra[campo]);
+  compra.detalle = detalles.map(mapearDetalleCompra);
+  return compra;
+}
+
 function validarFechaCalendario(fecha) {
   if (typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha.trim())) {
     throw new AppError('La fecha de la compra es obligatoria y debe tener formato YYYY-MM-DD.', 400);
@@ -32,7 +68,10 @@ function validarFechaCalendario(fecha) {
 async function obtenerCompraEnConexion(client, idCompra) {
   const ejecutar = typeof client === 'function' ? client : client.query.bind(client);
   const { rows } = await ejecutar(
-    `SELECT c.*, p.nombre AS proveedor_nombre
+    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
+            c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
+            c.motivo_anulacion, c.fecha_anulacion,
+            p.nombre AS proveedor_nombre
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
       WHERE c.id_compra = $1`,
@@ -48,25 +87,7 @@ async function obtenerCompraEnConexion(client, idCompra) {
       ORDER BY id_dcompra`,
     [idCompra]
   );
-  const compra = { ...rows[0] };
-  for (const campo of ['id_compra', 'id_ocompra', 'id_proveedor']) {
-    compra[campo] = compra[campo] == null ? null : Number(compra[campo]);
-  }
-  for (const campo of ['subtotal_sin_iva', 'total_iva', 'total']) compra[campo] = Number(compra[campo]);
-  compra.detalle = detalles.map((detalle) => ({
-    ...detalle,
-    id_dcompra: Number(detalle.id_dcompra),
-    id_compra: Number(detalle.id_compra),
-    id_insumo: detalle.id_insumo == null ? null : Number(detalle.id_insumo),
-    id_producto: detalle.id_producto == null ? null : Number(detalle.id_producto),
-    cantidad: Number(detalle.cantidad),
-    precio_unitario: Number(detalle.precio_unitario),
-    iva: Number(detalle.iva),
-    base_sin_iva: Number(detalle.base_sin_iva),
-    monto_iva: Number(detalle.monto_iva),
-    subtotal: Number(detalle.subtotal),
-  }));
-  return compra;
+  return mapearCompra(rows[0], detalles);
 }
 
 async function validarProveedor(client, idProveedor, { debeEstarActivo = true } = {}) {
@@ -285,14 +306,31 @@ export async function listarCompras(filtros) {
     }
   }
   const { rows } = await query(
-    `SELECT c.id_compra FROM tb_compras c
+    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
+            c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
+            c.motivo_anulacion, c.fecha_anulacion,
+            p.nombre AS proveedor_nombre
+       FROM tb_compras c
+       LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
       ${condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : ''}
       ORDER BY c.fecha DESC, c.id_compra DESC`,
     valores
   );
-  const compras = [];
-  for (const row of rows) compras.push(await obtenerCompraEnConexion(query, Number(row.id_compra)));
-  return compras;
+  if (!rows.length) return [];
+  const idsCompras = rows.map((row) => Number(row.id_compra));
+  const { rows: detalles } = await query(
+    `SELECT id_dcompra, id_compra, id_insumo, id_producto, cantidad, medida,
+            precio_unitario, iva, base_sin_iva, monto_iva, subtotal,
+            es_no_solicitado, nombre
+       FROM tb_detallecompra
+      WHERE id_compra = ANY($1::integer[])
+      ORDER BY id_compra, id_dcompra`,
+    [idsCompras]
+  );
+  const detallesPorCompra = agruparFilasPorId(detalles, 'id_compra');
+  return rows.map((row) =>
+    mapearCompra(row, detallesPorCompra.get(String(row.id_compra)) ?? [])
+  );
 }
 
 export async function obtenerCompra(idCompra) {

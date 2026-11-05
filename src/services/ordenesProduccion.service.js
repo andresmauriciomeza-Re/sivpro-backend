@@ -89,6 +89,16 @@ function mapearLinea(row) {
   };
 }
 
+export function agruparLineasPorOrden(rows) {
+  const agrupadas = new Map();
+  for (const row of rows) {
+    const idOrden = Number(row.id_orden_produccion);
+    if (!agrupadas.has(idOrden)) agrupadas.set(idOrden, []);
+    agrupadas.get(idOrden).push(mapearLinea(row));
+  }
+  return agrupadas;
+}
+
 async function cargarLineasOrden(client, idOrden) {
   const { rows } = await client.query(
     `SELECT d.id_detalle_op, d.id_producto, d.id_insumo, d.id_ft,
@@ -513,7 +523,13 @@ export async function listarOrdenesProduccion(filtros) {
     condiciones.push(`op.tipo = $${valores.length}`);
   }
   const { rows } = await query(
-    `SELECT op.*,
+    `SELECT op.id_orden_produccion, op.tipo, op.id_venta, op.fecha_solicitada,
+            op.fecha_entrega_estimada, op.hora_solicitada, op.estado, op.observacion,
+            op.venta_numero, op.cliente, op.fecha_creacion, op.fecha_en_proceso,
+            op.fecha_completada, op.fecha_cancelada, op.descripcion_preparacion,
+            op.tiempo_preparacion_min, op.insumos_descontados,
+            op.productos_descontados, op.stock_aplicado, op.historial,
+            op.insumos_requeridos,
             to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
@@ -525,12 +541,23 @@ export async function listarOrdenesProduccion(filtros) {
       ORDER BY op.fecha_creacion DESC, op.id_orden_produccion DESC`,
     valores
   );
-  const ordenes = [];
-  for (const row of rows) {
-    const lineas = await cargarLineasOrden(pool, Number(row.id_orden_produccion));
-    ordenes.push(mapearOrden(row, lineas));
-  }
-  return ordenes;
+  if (!rows.length) return [];
+  const idsOrden = rows.map((row) => Number(row.id_orden_produccion));
+  const { rows: filasLineas } = await pool.query(
+    `SELECT d.id_orden_produccion, d.id_detalle_op, d.id_producto, d.id_insumo, d.id_ft,
+            ft.version AS version_ficha, d.nombre, d.tamano,
+            d.cantidad_estimada, d.cantidad_debida, d.insumos_consumidos,
+            d.cantidad_real, d.merma, d.unidad
+       FROM tb_detalle_orden_produccion d
+       LEFT JOIN tb_ficha_tecnica ft ON ft.id_ft = d.id_ft
+      WHERE d.id_orden_produccion = ANY($1)
+      ORDER BY d.id_orden_produccion, d.id_detalle_op`,
+    [idsOrden]
+  );
+  const lineasPorOrden = agruparLineasPorOrden(filasLineas);
+  return rows.map((row) =>
+    mapearOrden(row, lineasPorOrden.get(Number(row.id_orden_produccion)) ?? [])
+  );
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
