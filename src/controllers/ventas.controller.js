@@ -6,6 +6,7 @@ import {
   crearVentaPanel,
   listarVentas,
   marcarDevolucion,
+  obtenerVentaCliente,
   resolverDevolucion,
   subirComprobanteCliente,
   verificarVenta,
@@ -56,9 +57,18 @@ export async function listarVentasController(req, res, next) {
 
 export async function obtenerVentaController(req, res, next) {
   try {
-    const ventas = await listarVentas({ idVenta: idNumerico(req.params.id) });
+    const ventas = await listarVentas({
+      idVenta: idNumerico(req.params.id),
+      incluirComprobantes: true,
+    });
     if (!ventas[0]) throw new AppError('Venta no encontrada.', 404);
     res.json(ventas[0]);
+  } catch (error) { next(error); }
+}
+
+export async function obtenerMiVentaController(req, res, next) {
+  try {
+    res.json(await obtenerVentaCliente(req.usuario.id, idNumerico(req.params.id)));
   } catch (error) { next(error); }
 }
 

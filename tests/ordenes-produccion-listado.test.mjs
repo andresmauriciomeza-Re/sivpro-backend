@@ -1,0 +1,106 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { agruparLineasPorOrden } from '../src/services/ordenesProduccion.service.js';
+
+test('agruparLineasPorOrden conserva el mapeo y el orden de las líneas por orden', () => {
+  const filas = [
+    {
+      id_orden_produccion: 12,
+      id_detalle_op: '1202',
+      id_producto: null,
+      id_insumo: '4',
+      id_ft: null,
+      version_ficha: null,
+      nombre: 'Salsa',
+      tamano: null,
+      cantidad_estimada: '2.5',
+      cantidad_debida: null,
+      insumos_consumidos: null,
+      cantidad_real: '2',
+      merma: '0.5',
+      unidad: 'kg',
+    },
+    {
+      id_orden_produccion: 11,
+      id_detalle_op: '1101',
+      id_producto: '8',
+      id_insumo: null,
+      id_ft: '6',
+      version_ficha: '3',
+      nombre: 'Pizza',
+      tamano: 'Grande',
+      cantidad_estimada: '1',
+      cantidad_debida: '1',
+      insumos_consumidos: '[{"id_insumo":4}]',
+      cantidad_real: null,
+      merma: null,
+      unidad: 'und',
+    },
+    {
+      id_orden_produccion: 12,
+      id_detalle_op: '1201',
+      id_producto: '9',
+      id_insumo: null,
+      id_ft: '7',
+      version_ficha: '1',
+      nombre: 'Masa',
+      tamano: null,
+      cantidad_estimada: '3',
+      cantidad_debida: '2',
+      insumos_consumidos: [],
+      cantidad_real: null,
+      merma: null,
+      unidad: 'kg',
+    },
+  ];
+
+  const agrupadas = agruparLineasPorOrden(filas);
+
+  assert.deepEqual(agrupadas.get(12), [
+    {
+      id_detalle_op: 1202,
+      id_producto: null,
+      id_insumo: 4,
+      id_ft: null,
+      version_ficha: null,
+      nombre: 'Salsa',
+      tamano: null,
+      cantidad_estimada: 2.5,
+      cantidad_debida: null,
+      insumos_consumidos: [],
+      cantidad_real: 2,
+      merma: 0.5,
+      unidad: 'kg',
+    },
+    {
+      id_detalle_op: 1201,
+      id_producto: 9,
+      id_insumo: null,
+      id_ft: 7,
+      version_ficha: 1,
+      nombre: 'Masa',
+      tamano: null,
+      cantidad_estimada: 3,
+      cantidad_debida: 2,
+      insumos_consumidos: [],
+      cantidad_real: null,
+      merma: null,
+      unidad: 'kg',
+    },
+  ]);
+  assert.deepEqual(agrupadas.get(11), [{
+    id_detalle_op: 1101,
+    id_producto: 8,
+    id_insumo: null,
+    id_ft: 6,
+    version_ficha: 3,
+    nombre: 'Pizza',
+    tamano: 'Grande',
+    cantidad_estimada: 1,
+    cantidad_debida: 1,
+    insumos_consumidos: [{ id_insumo: 4 }],
+    cantidad_real: null,
+    merma: null,
+    unidad: 'und',
+  }]);
+});

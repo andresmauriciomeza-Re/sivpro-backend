@@ -28,6 +28,16 @@ function claveItem(item) {
   return item.id_insumo != null ? `i:${item.id_insumo}` : `p:${item.id_producto}`;
 }
 
+export function agruparFilasPorId(rows, campoId) {
+  const agrupadas = new Map();
+  for (const row of rows) {
+    const id = String(row[campoId]);
+    if (!agrupadas.has(id)) agrupadas.set(id, []);
+    agrupadas.get(id).push(row);
+  }
+  return agrupadas;
+}
+
 async function validarProveedorActivo(client, idProveedor) {
   const { rows } = await client.query(
     'SELECT id_proveedor, nombre, estado FROM tb_proveedores WHERE id_proveedor = $1 FOR SHARE',
@@ -81,62 +91,85 @@ async function validarItemsOrdenCompra(client, items) {
   return resultado;
 }
 
-async function cargarOrdenCompleta(client, idOrdenCompra) {
+async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = null) {
   const ejecutar = typeof client === 'function' ? client : client.query.bind(client);
-  const { rows } = await ejecutar(
-    `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
-            p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
-            v.estado_actual, v.fecha_estado
-       FROM tb_ordencompras o
-       JOIN vw_ordencompras_estado v ON v.id_ocompra = o.id_ocompra
-       JOIN tb_proveedores p ON p.id_proveedor = o.id_proveedor
-      WHERE o.id_ocompra = $1`,
-    [idOrdenCompra]
-  );
-  if (!rows[0]) throw new AppError('Orden de compra no encontrada.', 404);
-  const orden = rows[0];
-  const historial = await ejecutar(
-    `SELECT estado, fecha_estado, motivo
-       FROM tb_estadooc
-      WHERE id_ocompra = $1
-      ORDER BY fecha_estado, id_estadooc`,
-    [idOrdenCompra]
-  );
-  const items = await ejecutar(
-    `SELECT d.id_dorcompra, d.id_insumo, d.id_producto,
-            COALESCE(d.nombre, i.nombre, p.nombre) AS nombre,
-            d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal
-       FROM tb_detalleordencompra d
-       LEFT JOIN tb_insumo i ON i.id_insumo = d.id_insumo
-       LEFT JOIN tb_productos p ON p.id_producto = d.id_producto
-      WHERE d.id_ocompra = $1
-      ORDER BY d.id_dorcompra`,
-    [idOrdenCompra]
-  );
-  const recepcionGuardada = await ejecutar(
-    'SELECT recepcion FROM tb_recepcion_orden WHERE id_ocompra = $1',
-    [idOrdenCompra]
-  );
-  const compras = await ejecutar(
-    `SELECT id_compra, n_factura, fecha, estado, total
-       FROM tb_compras
-      WHERE id_ocompra = $1
-      ORDER BY fecha, id_compra`,
-    [idOrdenCompra]
-  );
+  let orden;
+  let historialRows;
+  let itemsRows;
+  let recepcionGuardada;
+  let comprasRows;
+  let detallesRecibidos;
+  if (datosPrecargados) {
+    orden = datosPrecargados.orden;
+    historialRows = datosPrecargados.historial;
+    itemsRows = datosPrecargados.items;
+    recepcionGuardada = datosPrecargados.recepcion;
+    comprasRows = datosPrecargados.compras;
+    detallesRecibidos = datosPrecargados.detallesRecibidos;
+  } else {
+    const { rows } = await ejecutar(
+      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+              p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
+              v.estado_actual, v.fecha_estado
+         FROM tb_ordencompras o
+         JOIN vw_ordencompras_estado v ON v.id_ocompra = o.id_ocompra
+         JOIN tb_proveedores p ON p.id_proveedor = o.id_proveedor
+        WHERE o.id_ocompra = $1`,
+      [idOrdenCompra]
+    );
+    if (!rows[0]) throw new AppError('Orden de compra no encontrada.', 404);
+    orden = rows[0];
+    const historial = await ejecutar(
+      `SELECT estado, fecha_estado, motivo
+         FROM tb_estadooc
+        WHERE id_ocompra = $1
+        ORDER BY fecha_estado, id_estadooc`,
+      [idOrdenCompra]
+    );
+    historialRows = historial.rows;
+    const items = await ejecutar(
+      `SELECT d.id_dorcompra, d.id_insumo, d.id_producto,
+              COALESCE(d.nombre, i.nombre, p.nombre) AS nombre,
+              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal
+         FROM tb_detalleordencompra d
+         LEFT JOIN tb_insumo i ON i.id_insumo = d.id_insumo
+         LEFT JOIN tb_productos p ON p.id_producto = d.id_producto
+        WHERE d.id_ocompra = $1
+        ORDER BY d.id_dorcompra`,
+      [idOrdenCompra]
+    );
+    itemsRows = items.rows;
+    const recepcion = await ejecutar(
+      'SELECT recepcion FROM tb_recepcion_orden WHERE id_ocompra = $1',
+      [idOrdenCompra]
+    );
+    recepcionGuardada = recepcion.rows[0]?.recepcion ?? null;
+    const compras = await ejecutar(
+      `SELECT id_compra, n_factura, fecha, estado, total
+         FROM tb_compras
+        WHERE id_ocompra = $1
+        ORDER BY fecha, id_compra`,
+      [idOrdenCompra]
+    );
+    comprasRows = compras.rows;
+    const idComprasRecibidas = comprasRows
+      .filter((compra) => compra.estado === 'Recibido')
+      .map((compra) => Number(compra.id_compra));
+    const recibidos = idComprasRecibidas.length
+      ? await ejecutar(
+        `SELECT id_compra, id_insumo, id_producto, cantidad, medida,
+                precio_unitario, iva, subtotal, es_no_solicitado, nombre
+           FROM tb_detallecompra
+          WHERE id_compra = ANY($1::integer[])
+          ORDER BY id_dcompra`,
+        [idComprasRecibidas]
+      )
+      : { rows: [] };
+    detallesRecibidos = recibidos.rows;
+  }
 
-  const comprasRecibidas = compras.rows.filter((c) => c.estado === 'Recibido');
+  const comprasRecibidas = comprasRows.filter((c) => c.estado === 'Recibido');
   const idComprasRecibidas = comprasRecibidas.map((c) => Number(c.id_compra));
-  const { rows: detallesRecibidos } = idComprasRecibidas.length
-    ? await ejecutar(
-      `SELECT id_compra, id_insumo, id_producto, cantidad, medida,
-              precio_unitario, iva, subtotal, es_no_solicitado, nombre
-         FROM tb_detallecompra
-        WHERE id_compra = ANY($1::integer[])
-        ORDER BY id_dcompra`,
-      [idComprasRecibidas]
-    )
-    : { rows: [] };
 
   // Decisión 3A + A: calcular lo facturado y lo pendiente por insumo desde tb_compras (estado = 'Recibido')
   // y tb_detallecompra, excluyendo compras anuladas y líneas no solicitadas (es_no_solicitado = true).
@@ -167,7 +200,7 @@ async function cargarOrdenCompleta(client, idOrdenCompra) {
   }
 
   let montoPorFacturar = 0;
-  const itemsMapeados = items.rows.map((row) => {
+  const itemsMapeados = itemsRows.map((row) => {
     const idInsumo = row.id_insumo == null ? null : Number(row.id_insumo);
     const idProducto = row.id_producto == null ? null : Number(row.id_producto);
     const cantidad = Number(row.cantidad);
@@ -223,14 +256,14 @@ async function cargarOrdenCompleta(client, idOrdenCompra) {
           recibida: Number(extra.recibida.toFixed(6)),
         })),
         compras: idComprasRecibidas,
-        actualizado: recepcionGuardada.rows[0]?.recepcion?.actualizado ?? null,
+        actualizado: recepcionGuardada?.actualizado ?? null,
       }
-    : (recepcionGuardada.rows[0]?.recepcion ?? null);
+    : recepcionGuardada;
 
   const totalFacturas = redondearDosDecimales(
     comprasRecibidas.reduce((suma, c) => suma + Number(c.total), 0)
   );
-  const ultimoAnulado = [...historial.rows].reverse().find((h) => h.estado === 'Anulado');
+  const ultimoAnulado = [...historialRows].reverse().find((h) => h.estado === 'Anulado');
 
   return {
     id_ocompra: Number(orden.id_ocompra),
@@ -246,14 +279,14 @@ async function cargarOrdenCompleta(client, idOrdenCompra) {
     estado: orden.estado_actual,
     fecha_estado: orden.fecha_estado,
     motivo_anulacion: ultimoAnulado?.motivo ?? null,
-    historial_estados: historial.rows.map((row) => ({
+    historial_estados: historialRows.map((row) => ({
       estado: row.estado,
       fecha_estado: row.fecha_estado,
       motivo: row.motivo ?? null,
     })),
     items: itemsMapeados,
     recepcion: recepcionCalculada,
-    compras: compras.rows.map((row) => ({
+    compras: comprasRows.map((row) => ({
       id_compra: Number(row.id_compra),
       n_factura: row.n_factura,
       fecha: row.fecha,
@@ -290,6 +323,81 @@ async function insertarItems(client, idOrdenCompra, items) {
     );
   }
   return redondearDosDecimales(total);
+}
+
+async function cargarOrdenesCompletas(ordenes) {
+  if (!ordenes.length) return [];
+  const idsOrdenes = ordenes.map((orden) => Number(orden.id_ocompra));
+  const [historial, items, recepciones, compras] = await Promise.all([
+    query(
+      `SELECT id_ocompra, estado, fecha_estado, motivo
+         FROM tb_estadooc
+        WHERE id_ocompra = ANY($1::integer[])
+        ORDER BY id_ocompra, fecha_estado, id_estadooc`,
+      [idsOrdenes]
+    ),
+    query(
+      `SELECT d.id_ocompra, d.id_dorcompra, d.id_insumo, d.id_producto,
+              COALESCE(d.nombre, i.nombre, p.nombre) AS nombre,
+              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal
+         FROM tb_detalleordencompra d
+         LEFT JOIN tb_insumo i ON i.id_insumo = d.id_insumo
+         LEFT JOIN tb_productos p ON p.id_producto = d.id_producto
+        WHERE d.id_ocompra = ANY($1::integer[])
+        ORDER BY d.id_ocompra, d.id_dorcompra`,
+      [idsOrdenes]
+    ),
+    query(
+      `SELECT id_ocompra, recepcion
+         FROM tb_recepcion_orden
+        WHERE id_ocompra = ANY($1::integer[])`,
+      [idsOrdenes]
+    ),
+    query(
+      `SELECT id_ocompra, id_compra, n_factura, fecha, estado, total
+         FROM tb_compras
+        WHERE id_ocompra = ANY($1::integer[])
+        ORDER BY id_ocompra, fecha, id_compra`,
+      [idsOrdenes]
+    ),
+  ]);
+  const historialPorOrden = agruparFilasPorId(historial.rows, 'id_ocompra');
+  const itemsPorOrden = agruparFilasPorId(items.rows, 'id_ocompra');
+  const recepcionPorOrden = new Map(
+    recepciones.rows.map((row) => [String(row.id_ocompra), row.recepcion])
+  );
+  const comprasPorOrden = agruparFilasPorId(compras.rows, 'id_ocompra');
+  const idsComprasRecibidas = compras.rows
+    .filter((compra) => compra.estado === 'Recibido')
+    .map((compra) => Number(compra.id_compra));
+  let detallesRecibidos = [];
+  if (idsComprasRecibidas.length) {
+    const resultado = await query(
+      `SELECT c.id_ocompra AS _id_ocompra,
+              d.id_compra, d.id_insumo, d.id_producto, d.cantidad, d.medida,
+              d.precio_unitario, d.iva, d.subtotal, d.es_no_solicitado, d.nombre
+         FROM tb_detallecompra d
+         JOIN tb_compras c ON c.id_compra = d.id_compra
+        WHERE c.id_ocompra = ANY($1::integer[])
+          AND c.estado = 'Recibido'
+        ORDER BY d.id_dcompra`,
+      [idsOrdenes]
+    );
+    detallesRecibidos = resultado.rows;
+  }
+  const detallesPorOrden = agruparFilasPorId(detallesRecibidos, '_id_ocompra');
+
+  return Promise.all(ordenes.map((orden) => {
+    const id = String(orden.id_ocompra);
+    return cargarOrdenCompleta(query, orden.id_ocompra, {
+      orden,
+      historial: historialPorOrden.get(id) ?? [],
+      items: itemsPorOrden.get(id) ?? [],
+      recepcion: recepcionPorOrden.get(id) ?? null,
+      compras: comprasPorOrden.get(id) ?? [],
+      detallesRecibidos: detallesPorOrden.get(id) ?? [],
+    });
+  }));
 }
 
 export async function listarOrdenesCompra(filtros = {}) {
@@ -338,13 +446,15 @@ export async function listarOrdenesCompra(filtros = {}) {
 
     const valoresPagina = [...valores, limit, offset];
     const { rows } = await query(
-      `SELECT o.id_ocompra ${baseFromSql}
+      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+              p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
+              v.estado_actual, v.fecha_estado
+         ${baseFromSql}
         ORDER BY o.fecha DESC, o.id_ocompra DESC
         LIMIT $${valoresPagina.length - 1} OFFSET $${valoresPagina.length}`,
       valoresPagina
     );
-    const ordenes = [];
-    for (const row of rows) ordenes.push(await cargarOrdenCompleta(query, Number(row.id_ocompra)));
+    const ordenes = await cargarOrdenesCompletas(rows);
     return {
       data: ordenes,
       total,
@@ -355,13 +465,14 @@ export async function listarOrdenesCompra(filtros = {}) {
   }
 
   const { rows } = await query(
-    `SELECT o.id_ocompra ${baseFromSql}
+    `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+            p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
+            v.estado_actual, v.fecha_estado
+       ${baseFromSql}
       ORDER BY o.fecha DESC, o.id_ocompra DESC`,
     valores
   );
-  const ordenes = [];
-  for (const row of rows) ordenes.push(await cargarOrdenCompleta(query, Number(row.id_ocompra)));
-  return ordenes;
+  return cargarOrdenesCompletas(rows);
 }
 
 export async function obtenerOrdenCompra(idOrdenCompra) {
