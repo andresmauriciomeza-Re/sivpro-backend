@@ -66,6 +66,14 @@ function parsearJson(valor, respaldo = null) {
   return valor ?? respaldo;
 }
 
+function esOrdenVentaLocal(row) {
+  // Las órdenes del panel creadas antes de usar la columna conservan este origen en el historial.
+  return row.tipo === TIPO_PEDIDO && (
+    row.venta_local === true ||
+    parsearArray(row.historial).some((evento) => evento?.origen === 'venta_panel')
+  );
+}
+
 function numeroONull(valor) {
   return valor == null ? null : Number(valor);
 }
@@ -141,6 +149,7 @@ function mapearOrden(row, lineas) {
   orden.fecha_entrega_estimada = fechaEntregaEstimadaLocal ?? null;
   orden.venta_numero = ventaNumeroResuelto ?? orden.venta_numero ?? null;
   orden.cliente = clienteResuelto ?? orden.cliente ?? null;
+  orden.venta_local = esOrdenVentaLocal(row);
   orden.historial = historial;
   orden.insumos_requeridos = insumosRequeridos;
   orden.lineas = lineas.map(({ insumos_consumidos: _insumosConsumidos, ...linea }) => linea);
@@ -537,7 +546,7 @@ export async function listarOrdenesProduccion(filtros) {
             op.venta_numero, op.cliente, op.fecha_creacion, op.fecha_en_proceso,
             op.fecha_completada, op.fecha_cancelada, op.descripcion_preparacion,
             op.tiempo_preparacion_min, op.insumos_descontados,
-            op.productos_descontados, op.stock_aplicado, op.historial,
+            op.productos_descontados, op.stock_aplicado, op.historial, op.venta_local,
             op.insumos_requeridos,
             to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
@@ -790,7 +799,21 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
       validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
-      await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
+      const esVentaLocal = esOrdenVentaLocal(row);
+      if (datos.fecha_limite_automatica && !esVentaLocal) {
+        throw new AppError('La fecha límite automática solo está disponible para ventas en el local.', 400);
+      }
+      if (esVentaLocal && !datos.fecha_limite_automatica) {
+        const { rows } = await client.query(
+          `SELECT $1::timestamp >= date_trunc('minute', CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') AS no_pasada`,
+          [datos.fecha_entrega_estimada],
+        );
+        if (!rows[0]?.no_pasada) {
+          throw new AppError('La fecha límite no puede ser anterior a la hora actual de Bogotá.', 400);
+        }
+      } else if (!esVentaLocal) {
+        await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
+      }
       let lineasGeneradas = lineas;
       if (esPedido) {
         if (datos.lineas !== undefined) throw new AppError('No se puede cambiar la cantidad de un Pedido.', 400);
@@ -858,7 +881,8 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       await client.query(
         `UPDATE tb_orden_produccion
             SET estado = $2, fecha_en_proceso = now() AT TIME ZONE 'America/Bogota',
-                fecha_entrega_estimada = $3::timestamp,
+                fecha_entrega_estimada = CASE WHEN $6::boolean
+                  THEN CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota' ELSE $3::timestamp END,
                 insumos_requeridos = $4::jsonb, insumos_descontados = TRUE, historial = $5::jsonb
           WHERE id_orden_produccion = $1`,
         [
@@ -867,6 +891,7 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
           datos.fecha_entrega_estimada,
           JSON.stringify(calculo.requeridos),
           JSON.stringify(historial),
+          Boolean(datos.fecha_limite_automatica),
         ]
       );
       return {

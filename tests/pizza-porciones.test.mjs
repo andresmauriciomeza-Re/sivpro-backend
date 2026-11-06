@@ -37,6 +37,8 @@ function pizzaVentaClient(stockGrande) {
       }
       if (consulta.startsWith('select dv.id_producto')) return { rows: [{ ...linea }] };
       if (consulta.startsWith('insert into tb_orden_produccion')) {
+        assert.match(consulta, /venta_local/);
+        assert.equal(params[4], false);
         return { rows: [{ id_orden_produccion: 88 }] };
       }
       if (consulta.startsWith('insert into tb_detalle_orden_produccion')) return { rows: [] };

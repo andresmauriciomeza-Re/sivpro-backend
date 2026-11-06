@@ -338,7 +338,12 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
      VALUES ($1, $2, $3, $4, $5, 0, $6) RETURNING id_pago`,
     [idVenta, pago.tipo, pago.comprobante, total, montoPagadoInicial, ventaPanel ? 'Verificado' : 'Pendiente']
   );
-  if (ventaPanel) await descontarInventarioVentaPanel(client, productosCalculados);
+  if (ventaPanel) {
+    await descontarInventarioVentaPanel(client, productosCalculados);
+    if (productosCalculados.some((linea) => linea.producto.tipo === 'Elaborado')) {
+      await crearOrdenProduccion(client, idVenta, { inventarioYaDescontado: true });
+    }
+  }
   return { ...venta.rows[0], id_venta: Number(idVenta), pagos: [{ id_pago: Number(pagoInsertado.rows[0].id_pago), ...pago, depositado: montoPagadoInicial }] };
 }
 
@@ -486,16 +491,14 @@ async function devolverInventarioVentaPanel(client, idVenta) {
  * Anula una venta desde el listado del panel, TODO en una sola transacción:
  *
  * 1. bloquea la fila y exige un estado anulable (incluida una venta del panel
- *    Completada y sin OP Pedido) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
+ *    Completada) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
  *    minutos se miden AQUÍ, contra el reloj de la base en la misma convención
  *    con la que se guardó esa fecha (hora naive de Bogotá), nunca con el
  *    reloj del navegador.
  * 2. deja la venta en 'Anulado' con `motivo_rechazo`, `anulado_por` =
  *    'Administrador', `monto_reembolso` y `comprobante_anulacion`, y marca
  *    sus pagos como 'Rechazado'.
- * 3. si la venta ya estaba "Por entregar", cancela su orden de producción;
- *    si es una venta de panel completada sin OP, devuelve directamente el
- *    stock que la venta descontó.
+ * 3. cancela la orden de producción pendiente y devuelve el stock una sola vez.
  */
 export async function anularVenta(idVenta, datos) {
   try {
@@ -523,22 +526,31 @@ export async function anularVenta(idVenta, datos) {
       const monto = Number(venta.monto);
       const montoReembolso = Math.round(monto * porcentajeReembolso(motivo) * 100) / 100;
 
+      let idOrdenCancelada = null;
       if (ventaPanelCompletada) {
         const { rows: ordenes } = await client.query(
-          `SELECT id_orden_produccion FROM tb_orden_produccion
-            WHERE id_venta = $1 AND tipo = 'Pedido'
+          `SELECT id_orden_produccion, historial FROM tb_orden_produccion
+            WHERE id_venta = $1::int AND tipo = 'Pedido'
             ORDER BY id_orden_produccion LIMIT 1 FOR UPDATE`,
           [idVenta]
         );
-        if (ordenes[0]) {
+        const historial = ordenes[0]?.historial;
+        const esOrdenPanel = Array.isArray(historial) && historial.some((evento) => evento.origen === 'venta_panel');
+        if (ordenes[0] && !esOrdenPanel) {
           throw new AppError('La venta completada ya tiene una orden de producción y no puede anularse por este flujo.', 409);
+        }
+        if (ordenes[0]) {
+          idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta, {
+            devolverStock: false,
+            preservarCompletada: true,
+          });
         }
         await devolverInventarioVentaPanel(client, idVenta);
       }
 
-      const idOrdenCancelada = venta.estado === ESTADOS_VENTA.POR_ENTREGAR
-        ? await cancelarOrdenProduccionDeVenta(client, idVenta)
-        : null;
+      if (venta.estado === ESTADOS_VENTA.POR_ENTREGAR) {
+        idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta);
+      }
       await client.query(`UPDATE tb_pagos SET estado = 'Rechazado' WHERE id_venta = $1`, [idVenta]);
 
       const { rows: actualizada } = await client.query(

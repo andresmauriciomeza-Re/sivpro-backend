@@ -79,6 +79,12 @@ export function validarGenerarOrdenProduccion(body) {
   const salida = {
     fecha_entrega_estimada: validarFechaHoraLocal(entrada.fecha_entrega_estimada),
   };
+  if (entrada.fecha_limite_automatica !== undefined) {
+    if (typeof entrada.fecha_limite_automatica !== 'boolean') {
+      throw new AppError('La fecha límite automática debe ser verdadera o falsa.', 400);
+    }
+    salida.fecha_limite_automatica = entrada.fecha_limite_automatica;
+  }
   if (entrada.lineas !== undefined) {
     if (!Array.isArray(entrada.lineas) || entrada.lineas.length === 0) {
       throw new AppError('Debes enviar la cantidad de todas las líneas de la orden.', 400);
