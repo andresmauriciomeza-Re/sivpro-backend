@@ -6,7 +6,7 @@ const normalizarNombre = (valor) => {
     .map((palabra, indice) => indice > 0 && excepciones.has(palabra) ? palabra : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
 };
 import { query, transaction } from '../config/db.js';
-import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
+import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, MINUTOS_COMPLETAR_VENTA_LOCAL, puedeTransicionarVenta } from '../config/ventas.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
@@ -14,6 +14,9 @@ import { notificarEstadoPedido } from './pedidoEmail.service.js';
 import { estadoClientePedido } from '../utils/estadoPedidoCliente.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
+import { avanzarAutomaticamente } from './avanceAutomatico.service.js';
+import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
 
 /** Marca quién deja la venta en estado Anulado. El rechazo de la verificación
     lo hace siempre el panel; la anulación del panel usa 'Administrador' y la
@@ -78,7 +81,7 @@ export function validarProductosDeBase(lineas, productos) {
   const porId = new Map(productos.map((producto) => [Number(producto.id_producto), producto]));
   if (lineas.some((linea) => {
     const producto = porId.get(linea.idProducto);
-    return !producto || producto.estado !== 'Disponible' || !producto.categoria_activa;
+    return !producto || !producto.categoria_activa;
   })) {
     throw new AppError('Uno o más productos no existen o no están disponibles.', 400);
   }
@@ -91,10 +94,18 @@ export function validarProductosDeBase(lineas, productos) {
     if (producto.tipo === 'Reventa') {
       cantidadesReventa.set(linea.idProducto, (cantidadesReventa.get(linea.idProducto) || 0) + linea.cantidad);
     } else if (normalizarCategoria(producto.categoria_nombre) === 'pizza') {
-      const clave = `${linea.idProducto}:${linea.tamano}`;
-      cantidadesPizza.set(clave, (cantidadesPizza.get(clave) || 0) + linea.cantidad);
+      cantidadesPizza.set(linea.idProducto, (cantidadesPizza.get(linea.idProducto) || 0) + partesPizza(linea.cantidad, linea.tamano));
     } else if (normalizarCategoria(producto.categoria_nombre) === 'lasana') {
       cantidadesLasana.set(linea.idProducto, (cantidadesLasana.get(linea.idProducto) || 0) + linea.cantidad);
+    }
+    for (const [idProducto, requerido] of cantidadesPizza) {
+      const producto = porId.get(idProducto);
+      if (requerido > Number(producto.stock_partes ?? 0)) {
+        throw errorStockPizza(producto.nombre, producto.stock_partes);
+      }
+    }
+    if (productos.some((producto) => producto.estado !== 'Disponible')) {
+      throw new AppError('Uno o más productos no existen o no están disponibles.', 400);
     }
   }
   for (const [idProducto, cantidad] of [...cantidadesReventa, ...cantidadesLasana]) {
@@ -119,29 +130,6 @@ export function validarProductosDeBase(lineas, productos) {
     }
     return { ...linea, producto, precio, subtotal };
   });
-  for (const [clave, requerido] of cantidadesPizza) {
-    const [idProducto, tamano] = clave.split(':');
-    const producto = porId.get(Number(idProducto));
-    const columnaStock = tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
-    const stock = Number(producto[columnaStock] ?? 0);
-    if (requerido > stock) {
-      const error = new AppError(
-        `Solo hay ${stock} porciones de ${producto.nombre} ${tamano}.`,
-        409,
-      );
-      error.faltantes = [{
-        id_insumo: null,
-        id_producto: Number(idProducto),
-        nombre: producto.nombre,
-        requerido,
-        stock,
-        falta: requerido - stock,
-        unidad: 'porciones',
-        motivo: null,
-      }];
-      throw error;
-    }
-  }
   return calculadas;
 }
 
@@ -245,7 +233,7 @@ async function cargarProductosParaVenta(client, lineas) {
   const ids = lineas.map((linea) => linea.idProducto);
   const { rows } = await client.query(
     `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo, p.precio_venta,
-            p.unidad_venta, p.stock, p.stock_mediana, p.stock_grande,
+            p.unidad_venta, p.stock, p.stock_partes,
             p.precio_grande, p.estado, c.nombre AS categoria_nombre,
             c.estado AS categoria_activa
        FROM tb_productos p
@@ -262,33 +250,17 @@ async function descontarInventarioVentaPanel(client, lineas) {
   for (const linea of lineas) {
     const producto = linea.producto;
     const esPizza = normalizarCategoria(producto.categoria_nombre) === 'pizza';
-    const columnaStock = esPizza
-      ? (linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande')
-      : 'stock';
+    const columnaStock = esPizza ? 'stock_partes' : 'stock';
+    const cantidad = esPizza ? partesPizza(linea.cantidad, linea.tamano) : linea.cantidad;
     const { rows } = await client.query(
       `UPDATE tb_productos SET ${columnaStock} =       ${columnaStock} - $1::int
               WHERE id_producto = $2 AND ${columnaStock} >= $1::int
         RETURNING id_producto`,
-      [linea.cantidad, linea.idProducto]
+      [cantidad, linea.idProducto]
     );
     if (!rows[0]) {
       if (esPizza) {
-        const stock = Number(producto[columnaStock] ?? 0);
-        const error = new AppError(
-          `Solo hay ${stock} porciones de ${producto.nombre} ${linea.tamano}.`,
-          409
-        );
-        error.faltantes = [{
-          id_insumo: null,
-          id_producto: Number(linea.idProducto),
-          nombre: producto.nombre,
-          requerido: Number(linea.cantidad),
-          stock,
-          falta: Math.max(0, Number(linea.cantidad) - stock),
-          unidad: 'porciones',
-          motivo: null,
-        }];
-        throw error;
+        throw errorStockPizza(producto.nombre, producto.stock_partes);
       }
       throw new AppError(`Stock insuficiente para ${producto.nombre}.`, 409);
     }
@@ -297,7 +269,10 @@ async function descontarInventarioVentaPanel(client, lineas) {
 
 function mapearError(error) {
   if (error instanceof AppError) return error;
-  if (error?.code === '23505') return new AppError('Ya existe un registro con esos datos.', 409);
+  if (error?.code === '23505') {
+    console.error('Restricción única en ventas:', error.code, error.table, error.constraint, error.detail);
+    return new AppError('Ya existe un registro con esos datos.', 409);
+  }
   if (error?.code === '23503' || error?.code === '23514' || error?.code === '22P02') {
     console.error('Restricción/valor inválido en operación de ventas:', error.code, error.constraint);
     return new AppError('Los datos de la venta no cumplen las reglas de la base de datos.', 400);
@@ -318,9 +293,11 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
   const total = productosCalculados.reduce((suma, linea) => suma + linea.subtotal, 0);
   if (!Number.isFinite(total) || total < 0) throw new AppError('El total calculado no es válido.', 400);
   const venta = await client.query(
-    `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado)
-     VALUES ($1, $2, $3, $4, $5, $2) RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado`,
-    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.COMPLETADO : ESTADOS_VENTA.POR_VERIFICAR]
+    `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local)
+     VALUES ($1::int, $2::timestamp, $3::time, $4::numeric, $5::text, $2::timestamp, $6::boolean)
+     RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local,
+               to_char(fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local`,
+    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel]
   );
   const idVenta = venta.rows[0].id_venta;
   for (const linea of productosCalculados) {
@@ -476,13 +453,11 @@ async function devolverInventarioVentaPanel(client, idVenta) {
     if (esPizza && !['Mediana', 'Grande'].includes(linea.tamano)) {
       throw new AppError(`No se puede devolver el stock de ${linea.nombre} sin tamaño válido.`, 409);
     }
-    const columnaStock = esPizza
-      ? (linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande')
-      : 'stock';
+    const columnaStock = esPizza ? 'stock_partes' : 'stock';
     await client.query(
       `UPDATE tb_productos SET ${columnaStock} =       ${columnaStock} + $1::int
         WHERE id_producto = $2`,
-      [linea.cantidad, linea.id_producto]
+      [esPizza ? partesPizza(Number(linea.cantidad), linea.tamano) : linea.cantidad, linea.id_producto]
     );
   }
 }
@@ -490,8 +465,8 @@ async function devolverInventarioVentaPanel(client, idVenta) {
 /**
  * Anula una venta desde el listado del panel, TODO en una sola transacción:
  *
- * 1. bloquea la fila y exige un estado anulable (incluida una venta del panel
- *    Completada) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
+ * 1. bloquea la fila y exige un estado anulable (incluidas ventas antiguas
+ *    del panel ya completadas) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
  *    minutos se miden AQUÍ, contra el reloj de la base en la misma convención
  *    con la que se guardó esa fecha (hora naive de Bogotá), nunca con el
  *    reloj del navegador.
@@ -504,10 +479,10 @@ export async function anularVenta(idVenta, datos) {
   try {
     const resultado = await transaction(async (client) => {
       const { rows } = await client.query(
-        `SELECT v.id_venta, v.fecha, v.monto, v.estado,
+        `SELECT v.id_venta, v.fecha, v.monto, v.estado, v.venta_local,
                 EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'America/Bogota') - v.fecha)) AS transcurridos
            FROM tb_venta v
-          WHERE v.id_venta = $1
+          WHERE v.id_venta = $1::int
           FOR UPDATE OF v`,
         [idVenta]
       );
@@ -527,7 +502,13 @@ export async function anularVenta(idVenta, datos) {
       const montoReembolso = Math.round(monto * porcentajeReembolso(motivo) * 100) / 100;
 
       let idOrdenCancelada = null;
-      if (ventaPanelCompletada) {
+      if (venta.venta_local) {
+        idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta, {
+          devolverStock: false,
+          preservarCompletada: true,
+        });
+        await devolverInventarioVentaPanel(client, idVenta);
+      } else if (ventaPanelCompletada) {
         const { rows: ordenes } = await client.query(
           `SELECT id_orden_produccion, historial FROM tb_orden_produccion
             WHERE id_venta = $1::int AND tipo = 'Pedido'
@@ -548,7 +529,7 @@ export async function anularVenta(idVenta, datos) {
         await devolverInventarioVentaPanel(client, idVenta);
       }
 
-      if (venta.estado === ESTADOS_VENTA.POR_ENTREGAR) {
+      if (!venta.venta_local && venta.estado === ESTADOS_VENTA.POR_ENTREGAR) {
         idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta);
       }
       await client.query(`UPDATE tb_pagos SET estado = 'Rechazado' WHERE id_venta = $1`, [idVenta]);
@@ -588,11 +569,11 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
   try {
     const resultado = await transaction(async (client) => {
       const { rows } = await client.query(
-        `SELECT v.id_venta, v.fecha, v.monto, v.estado,
+        `SELECT v.id_venta, v.fecha, v.monto, v.estado, v.venta_local,
                 EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'America/Bogota') - v.fecha)) AS transcurridos
            FROM tb_venta v
            JOIN tb_cliente c ON c.id_cliente = v.id_cliente
-          WHERE v.id_venta = $1 AND c.id_usuario = $2 AND c.estado = TRUE
+          WHERE v.id_venta = $1::int AND c.id_usuario::text = $2::text AND c.estado = TRUE
           FOR UPDATE OF v`,
         [idVenta, idUsuario]
       );
@@ -608,9 +589,16 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
         throw new AppError('Solo puedes cancelar el pedido en los primeros 10 minutos.', 409);
       }
       const montoReembolso = Math.round(Number(venta.monto) * 0.8 * 100) / 100;
-      const idOrdenCancelada = venta.estado === ESTADOS_VENTA.POR_ENTREGAR
-        ? await cancelarOrdenProduccionDeVenta(client, idVenta)
-        : null;
+      let idOrdenCancelada = null;
+      if (venta.venta_local) {
+        idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta, {
+          devolverStock: false,
+          preservarCompletada: true,
+        });
+        await devolverInventarioVentaPanel(client, idVenta);
+      } else if (venta.estado === ESTADOS_VENTA.POR_ENTREGAR) {
+        idOrdenCancelada = await cancelarOrdenProduccionDeVenta(client, idVenta);
+      }
       await client.query(`UPDATE tb_pagos SET estado = 'Rechazado' WHERE id_venta = $1`, [idVenta]);
       const { rows: actualizada } = await client.query(
         `UPDATE tb_venta
@@ -893,38 +881,7 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
   } catch (error) { throw mapearError(error); }
 }
 
-/** Avance automático "Por entregar → Completado".
-    Regla de negocio: el estado cambia SOLO cuando llega la hora de recogida
-    (fecha del pedido + hora_recogida), nunca por un botón. Se ejecuta al
-    listar (panel o "mis pedidos"), así que no hace falta cron ni job: la
-    siguiente carga ya refleja el cambio y el Dashboard lo cuenta como ingreso.
-    `fecha` es timestamp naive de Bogotá, igual que `now() AT TIME ZONE`, así
-    que la comparación es directa. Devuelve cuántas ventas avanzaron. */
-export async function avanzarVentasCompletadas() {
-  const { rows, rowCount } = await query(
-    `UPDATE tb_venta
-        SET estado = $1, fecha_estado = now() AT TIME ZONE $2
-      WHERE estado = $3
-        AND hora_recogida IS NOT NULL
-        AND (fecha::date + hora_recogida + CASE WHEN hora_recogida < fecha::time THEN interval '1 day' ELSE interval '0' END) <= now() AT TIME ZONE $2
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM tb_orden_produccion op
-             WHERE op.id_venta = tb_venta.id_venta AND op.tipo = 'Pedido'
-          )
-          OR EXISTS (
-            SELECT 1 FROM tb_orden_produccion op
-             WHERE op.id_venta = tb_venta.id_venta
-               AND op.tipo = 'Pedido'
-               AND op.estado = 'Completada'
-          )
-        )
-      RETURNING id_venta`,
-    [ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA.POR_ENTREGAR]
-  );
-  for (const venta of rows) void notificarEstadoPedido(venta.id_venta);
-  return rowCount;
-}
+export { avanzarAutomaticamente as avanzarVentasCompletadas } from './avanceAutomatico.service.js';
 
 export function agruparFilasPorId(rows, campoId) {
   const agrupadas = new Map();
@@ -943,15 +900,19 @@ export async function listarVentas({
 } = {}) {
   // El avance por hora se resuelve aquí mismo (pull perezoso): la lista que se
   // va a devolver ya trae las ventas cuya hora de recogida ya pasó.
-  await avanzarVentasCompletadas();
+  await avanzarAutomaticamente();
   const where = [];
   const params = [];
-  if (idUsuario) { params.push(idUsuario); where.push(`c.id_usuario = $${params.length}`); }
-  if (idVenta) { params.push(idVenta); where.push(`v.id_venta = $${params.length}`); }
+  if (idUsuario) { params.push(idUsuario); where.push(`c.id_usuario::text = $${params.length}::text`); }
+  if (idVenta) { params.push(idVenta); where.push(`v.id_venta = $${params.length}::int`); }
   const filtro = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const { rows } = await query(
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
-            v.estado, v.fecha_estado, v.motivo_rechazo,
+            v.estado, v.fecha_estado, v.venta_local,
+            to_char(v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local,
+            CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
+            EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
+            v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
             op.estado AS estado_orden,
             d.id_devolucion, d.fecha AS devolucion_fecha,
@@ -967,7 +928,7 @@ export async function listarVentas({
        JOIN tb_cliente c ON c.id_cliente = v.id_cliente
        JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
        LEFT JOIN LATERAL (
-         SELECT o.estado
+         SELECT o.estado, o.fecha_en_proceso
            FROM tb_orden_produccion o
           WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
           ORDER BY o.id_orden_produccion DESC

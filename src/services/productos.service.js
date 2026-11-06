@@ -25,7 +25,8 @@ function verificarCoherenciaTipoCategoria(nombreCategoria, tipo) {
 const COLUMNAS_GESTION = `
   p.id_producto, p.id_categoria, p.nombre, p.tipo,
   p.precio_venta, p.costo_unitario, p.unidad_venta, p.stock,
-  p.stock_mediana, p.stock_grande,
+  p.stock_partes, FLOOR(p.stock_partes::numeric / 3)::int AS disponibles_mediana,
+  FLOOR(p.stock_partes::numeric / 4)::int AS disponibles_grande,
   p.imagen, p.estado,
   p.contenido, p.contenido_unidad, p.unidad_compra,
   p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
@@ -284,7 +285,7 @@ export async function cambiarEstadoProducto(idProducto, estado) {
 
       const { rows } = await client.query(
         `SELECT p.id_producto, p.tipo, p.precio_venta, p.precio_grande, p.estado,
-                p.stock, p.stock_mediana, p.stock_grande,
+                p.stock, p.stock_partes,
                 c.nombre AS categoria_nombre
            FROM tb_productos p
            JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
@@ -322,8 +323,8 @@ export async function cambiarEstadoProducto(idProducto, estado) {
       }
 
       const esPizza = normalizarCategoria(actual.categoria_nombre) === 'pizza';
-      const stockMediana = Number(actual.stock_mediana ?? 0);
-      const stockGrande = Number(actual.stock_grande ?? 0);
+      const stockMediana = Math.floor(Number(actual.stock_partes ?? 0) / 3);
+      const stockGrande = Math.floor(Number(actual.stock_partes ?? 0) / 4);
       const tieneStock = esPizza
         ? stockMediana + stockGrande > 0
         : Number(actual.stock ?? 0) > 0;

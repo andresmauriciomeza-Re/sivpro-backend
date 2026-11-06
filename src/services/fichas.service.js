@@ -1,6 +1,7 @@
 import AppError from '../errors/AppError.js';
 import { pool, query, transaction } from '../config/db.js';
 import { convertirUnidad, normalizarPasos, redondearDosDecimales } from '../utils/insumos.js';
+import { PORCIONES_TAMANO } from '../config/produccion.js';
 
 const COLUMNAS_FICHA = `
   ft.id_ft, ft.id_producto, ft.id_insumo, ft.version, ft.fecha_inicio,
@@ -192,7 +193,7 @@ function validarPropietarioYMedidas(propietario, datos) {
   if (propietario.entidad === 'producto') {
     if (propietario.tipo !== 'Elaborado') throw new AppError('Los productos de tipo Reventa no llevan ficha técnica.', 400);
     const categoria = normalizarCategoria(propietario.categoria_nombre);
-    const porcionesEsperadas = categoria === 'pizza' ? 6 : categoria === 'lasana' ? 1 : null;
+    const porcionesEsperadas = categoria === 'pizza' ? PORCIONES_TAMANO.pizza.Mediana : categoria === 'lasana' ? 1 : null;
     if (porcionesEsperadas === null) throw new AppError('La categoría del producto no admite ficha técnica.', 400);
     if (datos.cantidad !== 1 || datos.medida !== 'und' || datos.porciones !== porcionesEsperadas) {
       throw new AppError(`La ficha del producto debe llevar cantidad 1, medida «und» y ${porcionesEsperadas} porciones.`, 400);

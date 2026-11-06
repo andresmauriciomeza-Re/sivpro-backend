@@ -24,7 +24,8 @@ export async function obtenerCatalogoPublico(req, res, next) {
               p.imagen_data IS NOT NULL AS tiene_imagen,
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
               c.emoji AS categoria_emoji, p.stock,
-              p.stock_mediana, p.stock_grande, p.precio_grande
+              p.stock_partes, FLOOR(p.stock_partes::numeric / 3)::int AS disponibles_mediana,
+              FLOOR(p.stock_partes::numeric / 4)::int AS disponibles_grande, p.precio_grande
          FROM tb_productos p
          JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
         WHERE p.estado IN ('Disponible', 'No disponible') AND p.precio_venta > 0 AND c.estado = true
@@ -55,7 +56,8 @@ export async function obtenerProductosGestion(req, res, next) {
     const { rows } = await query(
       `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo,
               p.precio_venta, p.costo_unitario, p.unidad_venta, p.stock,
-              p.stock_mediana, p.stock_grande,
+              p.stock_partes, FLOOR(p.stock_partes::numeric / 3)::int AS disponibles_mediana,
+              FLOOR(p.stock_partes::numeric / 4)::int AS disponibles_grande,
               p.imagen, p.estado,
               p.imagen_data IS NOT NULL AS tiene_imagen,
               p.contenido, p.contenido_unidad, p.unidad_compra,

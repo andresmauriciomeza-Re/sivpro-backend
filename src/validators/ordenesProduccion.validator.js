@@ -76,9 +76,10 @@ export function validarIdOrdenProduccion(valor) {
 
 export function validarGenerarOrdenProduccion(body) {
   const entrada = body || {};
-  const salida = {
-    fecha_entrega_estimada: validarFechaHoraLocal(entrada.fecha_entrega_estimada),
-  };
+  const salida = {};
+  if (entrada.fecha_entrega_estimada !== undefined) {
+    salida.fecha_entrega_estimada = validarFechaHoraLocal(entrada.fecha_entrega_estimada);
+  }
   if (entrada.fecha_limite_automatica !== undefined) {
     if (typeof entrada.fecha_limite_automatica !== 'boolean') {
       throw new AppError('La fecha límite automática debe ser verdadera o falsa.', 400);

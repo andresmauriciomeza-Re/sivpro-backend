@@ -4,10 +4,13 @@ import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/producci
 import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
 import { validarInsumosActivos } from '../utils/validarInsumosActivos.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
-import { PORCIONES_TAMANO } from '../config/produccion.js';
+import { PORCIONES_TAMANO, MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { validarTamanoPizzaPreparacion } from '../validators/ordenesProduccion.validator.js';
 import { validarGrandeMayorQueMediana } from '../validators/productos.validator.js';
+import { avanzarAutomaticamente } from './avanceAutomatico.service.js';
+import { convertirUnidad } from '../utils/insumos.js';
+import { asignarPreciosPizza } from '../utils/preciosPizza.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
 const ESTADO_EN_PROCESO = 'En proceso';
@@ -34,7 +37,10 @@ export function validarTransicion(actual, destino) {
 
 function mapearError(error) {
   if (error instanceof AppError) return error;
-  if (error?.code === '23505') return new AppError('Ya existe una orden con esos datos.', 409);
+  if (error?.code === '23505') {
+    console.error('Restricción única en órdenes de producción:', error.code, error.table, error.constraint, error.detail);
+    return new AppError('Ya existe una orden con esos datos.', 409);
+  }
   if (error?.code === '23503') return new AppError('La orden o alguno de los registros relacionados no existe.', 400);
   if (error?.code === '23514' || error?.code === '23502' || error?.code === '22P02') {
     return new AppError('Los datos de la orden no cumplen las reglas de la base de datos.', 400);
@@ -67,9 +73,9 @@ function parsearJson(valor, respaldo = null) {
 }
 
 function esOrdenVentaLocal(row) {
-  // Las órdenes del panel creadas antes de usar la columna conservan este origen en el historial.
+  // Las órdenes antiguas del panel conservan su origen en el historial.
   return row.tipo === TIPO_PEDIDO && (
-    row.venta_local === true ||
+    row.es_venta_local === true ||
     parsearArray(row.historial).some((evento) => evento?.origen === 'venta_panel')
   );
 }
@@ -131,6 +137,8 @@ function mapearOrden(row, lineas) {
     venta_numero_resuelto: ventaNumeroResuelto,
     cliente_resuelto: clienteResuelto,
     fecha_entrega_estimada_local: fechaEntregaEstimadaLocal,
+    preparacion_vencida: _preparacionVencida,
+    venta_local: _ventaLocalAnterior,
     ...orden
   } = row;
   const historial = parsearArray(orden.historial);
@@ -149,7 +157,7 @@ function mapearOrden(row, lineas) {
   orden.fecha_entrega_estimada = fechaEntregaEstimadaLocal ?? null;
   orden.venta_numero = ventaNumeroResuelto ?? orden.venta_numero ?? null;
   orden.cliente = clienteResuelto ?? orden.cliente ?? null;
-  orden.venta_local = esOrdenVentaLocal(row);
+  orden.es_venta_local = esOrdenVentaLocal(row);
   orden.historial = historial;
   orden.insumos_requeridos = insumosRequeridos;
   orden.lineas = lineas.map(({ insumos_consumidos: _insumosConsumidos, ...linea }) => linea);
@@ -159,6 +167,10 @@ function mapearOrden(row, lineas) {
 async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}) {
   const { rows } = await client.query(
     `SELECT op.*,
+            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+            CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
+            (op.tiempo_preparacion_min > 0 AND op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute' <= now() AT TIME ZONE 'America/Bogota') AS preparacion_vencida,
+            COALESCE(v.venta_local, FALSE) AS es_venta_local,
             to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
@@ -166,7 +178,7 @@ async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}
        LEFT JOIN tb_venta v ON v.id_venta = op.id_venta
        LEFT JOIN tb_cliente c ON c.id_cliente = v.id_cliente
        LEFT JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
-      WHERE op.id_orden_produccion = $1
+      WHERE op.id_orden_produccion = $1::int
       ${bloquear ? 'FOR UPDATE OF op' : ''}`,
     [idOrden]
   );
@@ -176,17 +188,6 @@ async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}
 }
 
 async function validarFechaLimite(client, row, fechaLimite) {
-  if (row.tipo !== TIPO_PEDIDO) {
-    const { rows } = await client.query(
-      `SELECT $1::timestamp >= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') AS no_pasada`,
-      [fechaLimite],
-    );
-    if (!rows[0]?.no_pasada) {
-      throw new AppError('La fecha límite no puede ser anterior a la hora actual de Bogotá.', 400);
-    }
-    return;
-  }
-
   const { rows } = await client.query(
     `SELECT
        to_char(CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD"T"HH24:MI:SS') AS ahora_bogota,
@@ -271,7 +272,7 @@ function cantidadDebidaDesdeSnapshot(linea, snapshot = linea.insumos_consumidos)
  *   3. cualquier otro caso, si existe un producto con ese id → producto
  *      'Elaborado' (es como el frontend manda la cantidad inicial).
  */
-async function resolverLineas(client, lineas) {
+async function resolverLineas(client, lineas, tamanosAntiguos = new Set()) {
   const idsInsumo = [...new Set(lineas.map((linea) => linea.id_insumo).filter((id) => id != null))];
   const idsProducto = [...new Set(lineas.map((linea) => linea.id_producto).filter((id) => id != null))];
 
@@ -311,6 +312,8 @@ async function resolverLineas(client, lineas) {
 
   const pendientesInsumo = [];
   const pendientesProducto = [];
+  const pizzasSinTamano = new Set();
+  const pizzasConTamano = new Set();
   const resueltas = new Array(lineas.length);
   for (let indice = 0; indice < lineas.length; indice += 1) {
     const linea = lineas[indice];
@@ -328,9 +331,23 @@ async function resolverLineas(client, lineas) {
       if (producto.tipo !== 'Elaborado') {
         throw new AppError(`«${producto.nombre}» debe ser un producto Elaborado.`, 400);
       }
-      const tamano = normalizarCategoria(producto.categoria_nombre) === 'pizza'
-        ? validarTamanoPizzaPreparacion(linea.tamano, producto.nombre)
-        : linea.tamano;
+      const esPizza = normalizarCategoria(producto.categoria_nombre) === 'pizza';
+      const tamano = linea.tamano ?? null;
+      if (esPizza) {
+        if (tamano != null) {
+          validarTamanoPizzaPreparacion(tamano, producto.nombre);
+          if (!tamanosAntiguos.has(`${producto.id_producto}:${tamano}`)) {
+            throw new AppError(`La preparación de «${producto.nombre}» se crea sin tamaño; el corte se decide al completar.`, 400);
+          }
+          if (pizzasSinTamano.has(Number(producto.id_producto))) throw new AppError('No mezcles líneas antiguas y sin tamaño de la misma pizza.', 400);
+          pizzasConTamano.add(Number(producto.id_producto));
+        } else {
+          if (pizzasSinTamano.has(Number(producto.id_producto)) || pizzasConTamano.has(Number(producto.id_producto))) {
+            throw new AppError('No repitas pizzas en las líneas.', 400);
+          }
+          pizzasSinTamano.add(Number(producto.id_producto));
+        }
+      }
       pendientesProducto.push({ indice, linea: { ...linea, tamano }, producto });
       continue;
     }
@@ -408,8 +425,9 @@ async function resolverLineas(client, lineas) {
 async function prepararLineas(client, lineasEntrada, {
   bloquearInsumos = false,
   requiereFichaProducto = false,
+  tamanosAntiguos = new Set(),
 } = {}) {
-  const resueltas = await resolverLineas(client, lineasEntrada);
+  const resueltas = await resolverLineas(client, lineasEntrada, tamanosAntiguos);
   if (requiereFichaProducto) {
     const sinFicha = resueltas.find((linea) => linea.id_producto != null && linea.id_ft == null);
     if (sinFicha) throw new AppError(`«${sinFicha.nombre}» no tiene ficha técnica vigente.`, 400);
@@ -530,15 +548,16 @@ async function crearPreparacion(datos) {
 }
 
 export async function listarOrdenesProduccion(filtros) {
+  await avanzarAutomaticamente();
   const condiciones = [];
   const valores = [];
   if (filtros.estado !== undefined) {
     valores.push(filtros.estado);
-    condiciones.push(`op.estado = $${valores.length}`);
+    condiciones.push(`op.estado = $${valores.length}::text`);
   }
   if (filtros.tipo !== undefined) {
     valores.push(filtros.tipo);
-    condiciones.push(`op.tipo = $${valores.length}`);
+    condiciones.push(`op.tipo = $${valores.length}::text`);
   }
   const { rows } = await query(
     `SELECT op.id_orden_produccion, op.tipo, op.id_venta, op.fecha_solicitada,
@@ -546,8 +565,11 @@ export async function listarOrdenesProduccion(filtros) {
             op.venta_numero, op.cliente, op.fecha_creacion, op.fecha_en_proceso,
             op.fecha_completada, op.fecha_cancelada, op.descripcion_preparacion,
             op.tiempo_preparacion_min, op.insumos_descontados,
-            op.productos_descontados, op.stock_aplicado, op.historial, op.venta_local,
+            op.productos_descontados, op.stock_aplicado, op.historial,
             op.insumos_requeridos,
+            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+            CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
+            COALESCE(v.venta_local, FALSE) AS es_venta_local,
             to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
@@ -568,7 +590,7 @@ export async function listarOrdenesProduccion(filtros) {
             d.cantidad_real, d.merma, d.unidad
        FROM tb_detalle_orden_produccion d
        LEFT JOIN tb_ficha_tecnica ft ON ft.id_ft = d.id_ft
-      WHERE d.id_orden_produccion = ANY($1)
+      WHERE d.id_orden_produccion = ANY($1::int[])
       ORDER BY d.id_orden_produccion, d.id_detalle_op`,
     [idsOrden]
   );
@@ -579,6 +601,7 @@ export async function listarOrdenesProduccion(filtros) {
 }
 
 export async function obtenerOrdenProduccion(idOrden) {
+  await avanzarAutomaticamente();
   const { orden } = await obtenerOrdenEnConexion(pool, idOrden);
   return orden;
 }
@@ -625,7 +648,9 @@ export async function actualizarOrdenProduccion(idOrden, datos) {
         cantidad: linea.cantidad_estimada,
         tamano: linea.tamano,
       }));
-      const { calculo, detalle } = await prepararLineas(client, lineasEntrada, { bloquearInsumos: true });
+      const tamanosAntiguos = new Set(lineas.filter((linea) => linea.id_producto != null && linea.tamano != null)
+        .map((linea) => `${linea.id_producto}:${linea.tamano}`));
+      const { calculo, detalle } = await prepararLineas(client, lineasEntrada, { bloquearInsumos: true, tamanosAntiguos });
       lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
 
       await client.query('DELETE FROM tb_detalle_orden_produccion WHERE id_orden_produccion = $1', [idOrden]);
@@ -800,19 +825,24 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
       const esVentaLocal = esOrdenVentaLocal(row);
-      if (datos.fecha_limite_automatica && !esVentaLocal) {
-        throw new AppError('La fecha límite automática solo está disponible para ventas en el local.', 400);
-      }
-      if (esVentaLocal && !datos.fecha_limite_automatica) {
-        const { rows } = await client.query(
-          `SELECT $1::timestamp >= date_trunc('minute', CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') AS no_pasada`,
-          [datos.fecha_entrega_estimada],
-        );
-        if (!rows[0]?.no_pasada) {
-          throw new AppError('La fecha límite no puede ser anterior a la hora actual de Bogotá.', 400);
+      if (esPedido) {
+        if (!datos.fecha_entrega_estimada) {
+          throw new AppError('Indica la fecha y hora límite.', 400);
         }
-      } else if (!esVentaLocal) {
-        await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
+        if (datos.fecha_limite_automatica && !esVentaLocal) {
+          throw new AppError('La fecha límite automática solo está disponible para ventas en el local.', 400);
+        }
+        if (esVentaLocal && !datos.fecha_limite_automatica) {
+          const { rows } = await client.query(
+            `SELECT $1::timestamp >= date_trunc('minute', CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') AS no_pasada`,
+            [datos.fecha_entrega_estimada],
+          );
+          if (!rows[0]?.no_pasada) {
+            throw new AppError('La fecha límite no puede ser anterior a la hora actual de Bogotá.', 400);
+          }
+        } else if (!esVentaLocal) {
+          await validarFechaLimite(client, row, datos.fecha_entrega_estimada);
+        }
       }
       let lineasGeneradas = lineas;
       if (esPedido) {
@@ -878,7 +908,18 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
         fechaHora: fechaHoraBogota().timestamp,
         ...(esPedido ? { detalle: 'Pedido (calentamiento): sin descuento de inventario.' } : {}),
       });
-      await client.query(
+      if (!esPedido) {
+        await client.query(
+          `UPDATE tb_orden_produccion
+              SET estado = $2::text, fecha_en_proceso = CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota',
+                  fecha_entrega_estimada = CASE WHEN tiempo_preparacion_min > 0
+                    THEN (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') + tiempo_preparacion_min * interval '1 minute'
+                    ELSE NULL END,
+                  insumos_requeridos = $3::jsonb, insumos_descontados = TRUE, historial = $4::jsonb
+            WHERE id_orden_produccion = $1::int`,
+          [idOrden, ESTADO_EN_PROCESO, JSON.stringify(calculo.requeridos), JSON.stringify(historial)],
+        );
+      } else await client.query(
         `UPDATE tb_orden_produccion
             SET estado = $2, fecha_en_proceso = now() AT TIME ZONE 'America/Bogota',
                 fecha_entrega_estimada = CASE WHEN $6::boolean
@@ -918,11 +959,7 @@ async function categoriaDeProducto(client, idProducto) {
   return String(rows[0]?.nombre ?? '').slice(0, 100) || null;
 }
 
-/** Precios por porción de una pizza al completar su OP: solo los tamaños con
-    línea en la orden deben quedar con precio > 0 (el otro puede seguir en 0:
-    no hay stock de ese tamaño). La regla Grande > Mediana aplica cuando ambos
-    precios (el enviado o el guardado) son > 0. Los precios enviados se guardan
-    en la misma transacción que la orden. */
+/** Los precios y el inventario se guardan en la misma transacción. */
 async function aplicarPreciosPizza(client, idProducto, nombre, datos, tamanos) {
   const { rows } = await client.query(
     `SELECT precio_venta, precio_grande
@@ -955,15 +992,70 @@ async function aplicarPreciosPizza(client, idProducto, nombre, datos, tamanos) {
   }
 }
 
-export async function completarOrdenProduccion(idOrden, datos) {
+async function preciosAutomaticos(client, idProducto, nombre) {
+  const { rows: productos } = await client.query(
+    `SELECT precio_venta, precio_grande FROM tb_productos WHERE id_producto = $1::int FOR UPDATE`,
+    [idProducto],
+  );
+  const producto = productos[0];
+  if (!producto) throw new AppError(`No se encontró el producto «${nombre}».`, 409);
+  const mediana = Number(producto.precio_venta ?? 0);
+  const grande = Number(producto.precio_grande ?? 0);
+  if (mediana > 0 && grande > 0) return [];
+  const { rows: fichas } = await client.query(
+    `SELECT id_ft, cantidad, tiempo_preparacion FROM tb_ficha_tecnica
+      WHERE id_producto = $1::int AND fecha_final IS NULL ORDER BY version DESC LIMIT 1`,
+    [idProducto],
+  );
+  const ficha = fichas[0];
+  if (!ficha || !(Number(ficha.cantidad) > 0)) throw new AppError(`No hay ficha vigente para calcular el precio de «${nombre}».`, 409);
+  const { rows: componentes } = await client.query(
+    `SELECT f.cantidad, f.medida, i.nombre, i.unidad_medida, i.costo_unitario
+       FROM tb_insumo_ficha_tecnica f JOIN tb_insumo i ON i.id_insumo = f.id_insumo
+      WHERE f.id_ft = $1::int`, [ficha.id_ft],
+  );
+  if (!componentes.length) throw new AppError(`La ficha de «${nombre}» no tiene insumos para calcular el precio.`, 409);
+  let costo = 0;
+  for (const componente of componentes) {
+    const unitario = Number(componente.costo_unitario);
+    if (!Number.isFinite(unitario) || unitario <= 0) throw new AppError(`Falta el costo del insumo «${componente.nombre}».`, 409);
+    costo += convertirUnidad(Number(componente.cantidad) / Number(ficha.cantidad), componente.medida, componente.unidad_medida, componente.nombre) * unitario;
+  }
+  const { rows: parametros } = await client.query(
+    `SELECT mano_obra_hora, tarifa_gas_m3, consumo_gas_m3_hora, margen_ganancia
+       FROM tb_parametros_costos WHERE id_parametro = 1`,
+  );
+  const p = parametros[0];
+  if (!p) throw new AppError('No se encontraron los parámetros de costos.', 503);
+  const horas = Number(ficha.tiempo_preparacion ?? 0) / 60;
+  costo += horas * Number(p.mano_obra_hora) + horas * Number(p.tarifa_gas_m3) * Number(p.consumo_gas_m3_hora);
+  const asignacion = asignarPreciosPizza(costo, Number(p.margen_ganancia), mediana, grande);
+  await client.query(
+    `UPDATE tb_productos SET precio_venta = $2::numeric, precio_grande = $3::numeric WHERE id_producto = $1::int`,
+    [idProducto, asignacion.mediana, asignacion.grande],
+  );
+  return asignacion.asignados.map((p) =>
+    `Precio ${p.tamano} asignado automáticamente ($${p.precio.toLocaleString('es-CO')}); revísalo en Productos${p.porDebajoDelCosto ? ' (por debajo del costo)' : ''}`);
+}
+
+async function completarPreparacion(idOrden, datos, automatico) {
   try {
     const resultado = await transaction(async (client) => {
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      validarTransicion(row.estado, ESTADO_COMPLETADA);
 
+      if (automatico && (row.tipo !== TIPO_PREPARACION || row.estado !== ESTADO_EN_PROCESO || !row.preparacion_vencida)) return null;
+      if (automatico) {
+        datos = { lineas: [] };
+        for (const linea of lineas) {
+          const snapshot = linea.cantidad_debida == null ? await snapshotConsumoLinea(client, linea) : linea.insumos_consumidos;
+          datos.lineas.push({ id_detalle_op: linea.id_detalle_op, cantidad_real: linea.cantidad_debida == null
+            ? cantidadDebidaDesdeSnapshot(linea, snapshot) : Number(linea.cantidad_debida) });
+        }
+      }
       if (row.tipo === TIPO_PEDIDO) {
-        if (datos.lineas !== null) throw new AppError('La finalización de un pedido no recibe líneas ni cantidades reales.', 400);
+        throw new AppError('Esta orden se completa sola al terminar los 25 minutos', 409);
       } else if (row.tipo === TIPO_PREPARACION) {
+        validarTransicion(row.estado, ESTADO_COMPLETADA);
         if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
           throw new AppError('Debes enviar la cantidad real de todas las líneas de la preparación.', 400);
         }
@@ -976,18 +1068,20 @@ export async function completarOrdenProduccion(idOrden, datos) {
       }
 
       const verificacion = [];
+      const avisosPrecios = [];
       if (row.tipo === TIPO_PREPARACION) {
         const preciosSueltos = datos.precio_mediana !== undefined || datos.precio_grande !== undefined;
         const preciosPorProducto = new Map((datos.precios ?? []).map((p) => [p.id_producto, p]));
         const pizzasDeOrden = new Map();
+        const reales = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea]));
         for (const linea of lineas) {
           if (linea.id_producto == null) continue;
           if (!pizzasDeOrden.has(linea.id_producto)) {
             const categoria = await categoriaDeProducto(client, linea.id_producto);
             if (normalizarCategoria(categoria) !== 'pizza') continue;
-            pizzasDeOrden.set(linea.id_producto, { nombre: linea.nombre, tamanos: new Set() });
+            pizzasDeOrden.set(linea.id_producto, { nombre: linea.nombre, tamanos: new Set(['Mediana', 'Grande']) });
           }
-          pizzasDeOrden.get(linea.id_producto).tamanos.add(linea.tamano);
+          if (linea.tamano != null) validarTamanoPizzaPreparacion(linea.tamano, linea.nombre);
         }
         if (preciosSueltos && pizzasDeOrden.size > 1) {
           throw new AppError('Con varias pizzas envía los precios por producto en el campo precios.', 400);
@@ -997,6 +1091,10 @@ export async function completarOrdenProduccion(idOrden, datos) {
         }
         if (!row.stock_aplicado) {
           for (const [idProducto, { nombre, tamanos }] of pizzasDeOrden) {
+            if (automatico) {
+              avisosPrecios.push(...await preciosAutomaticos(client, idProducto, nombre));
+              continue;
+            }
             const propios = preciosPorProducto.get(idProducto) ?? {};
             await aplicarPreciosPizza(client, idProducto, nombre, {
               precio_mediana: propios.precio_mediana ?? datos.precio_mediana,
@@ -1004,9 +1102,8 @@ export async function completarOrdenProduccion(idOrden, datos) {
             }, tamanos);
           }
         }
-        const cantidades = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea.cantidad_real]));
         for (const linea of lineas) {
-          const cantidadReal = cantidades.get(linea.id_detalle_op);
+          const cantidadReal = reales.get(linea.id_detalle_op).cantidad_real;
           const calculadoAlVerificar = linea.cantidad_debida == null;
           const snapshot = calculadoAlVerificar
             ? await snapshotConsumoLinea(client, linea)
@@ -1025,23 +1122,24 @@ export async function completarOrdenProduccion(idOrden, datos) {
             );
           }
           const merma = Math.max(0, cantidadDebida - cantidadReal);
-          // La producción de una pizza cuenta en porciones y separa el tamaño.
           const esProducto = linea.id_producto != null;
           const categoria = esProducto
             ? await categoriaDeProducto(client, linea.id_producto)
             : null;
-          const porcionesPizza = normalizarCategoria(categoria) === 'pizza'
-            ? PORCIONES_TAMANO.pizza[validarTamanoPizzaPreparacion(linea.tamano, linea.nombre)]
-            : null;
+          const esPizza = esProducto && pizzasDeOrden.has(linea.id_producto);
+          const porcionesPizza = esPizza && linea.tamano != null ? PORCIONES_TAMANO.pizza[linea.tamano] : null;
+          const partes = cantidadReal * 24;
+          if (esPizza && (!Number.isSafeInteger(partes) || partes > 2147483647)) {
+            throw new AppError(`La cantidad de pizza de «${linea.nombre}» es demasiado grande.`, 400);
+          }
           if (!row.stock_aplicado) {
             const { rowCount } = esProducto
-              ? porcionesPizza != null
+              ? esPizza
                 ? await client.query(
                     `UPDATE tb_productos
-                        SET ${linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande'} =
-                            ${linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande'}                             + $2::int
-                      WHERE id_producto = $1 AND tipo = 'Elaborado'`,
-                                                [linea.id_producto, Math.round(cantidadReal * porcionesPizza)]
+                        SET stock_partes = stock_partes + $2::int
+                      WHERE id_producto = $1::int AND tipo = 'Elaborado'`,
+                    [linea.id_producto, partes]
                   )
                 : await client.query(
                     `UPDATE tb_productos
@@ -1110,6 +1208,7 @@ export async function completarOrdenProduccion(idOrden, datos) {
         de: row.estado,
         a: ESTADO_COMPLETADA,
         fechaHora: fechaHoraBogota().timestamp,
+        ...(automatico ? { automatico: true, detalle: avisosPrecios.join(' · ') || 'Completada automáticamente' } : {}),
         ...(row.tipo === TIPO_PREPARACION ? { verificacion } : {}),
       });
       await client.query(
@@ -1125,12 +1224,15 @@ export async function completarOrdenProduccion(idOrden, datos) {
         idVenta: row.tipo === TIPO_PEDIDO ? row.id_venta : null,
       };
     });
-    if (resultado.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
-    return resultado.orden;
+    if (resultado?.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    return resultado?.orden ?? null;
   } catch (error) {
     throw mapearError(error);
   }
 }
+
+export const completarOrdenProduccion = (idOrden, datos) => completarPreparacion(idOrden, datos, false);
+export const completarPreparacionAutomatica = (idOrden) => completarPreparacion(idOrden, null, true);
 
 export async function darBajaOrdenProduccion(idOrden, datos) {
   try {

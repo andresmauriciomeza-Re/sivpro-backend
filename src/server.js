@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './app.js';
 import { verificarCloudinary } from './config/cloudinary.js';
 import { verificarCorreo } from './services/mail.service.js';
+import { avanzarAutomaticamente } from './services/avanceAutomatico.service.js';
 
 if (!String(process.env.SUPER_ADMIN_ID || '').trim()) {
   console.warn('SUPER_ADMIN_ID no está configurado; no se marcará ningún usuario como super administrador.');
@@ -22,4 +23,18 @@ app.listen(PORT, () => {
   // Informa en consola si la conexión SMTP quedó lista; si falla, solo loguea
   // y el servidor sigue levantado.
   verificarCorreo();
+  let avanceEnCurso = false;
+  const avanzar = async () => {
+    if (avanceEnCurso) return;
+    avanceEnCurso = true;
+    try {
+      await avanzarAutomaticamente();
+    } catch (error) {
+      console.error('Error al avanzar automáticamente pedidos y ventas:', error);
+    } finally {
+      avanceEnCurso = false;
+    }
+  };
+  void avanzar();
+  setInterval(() => void avanzar(), 60_000);
 });

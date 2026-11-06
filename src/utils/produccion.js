@@ -185,7 +185,8 @@ export async function calcularRequeridosProduccion(client, lineasOrden, { bloque
         continue;
       }
       let factorTamano = 1;
-      const porciones = PORCIONES_TAMANO[normalizarCategoria(receta.categoria_nombre)]?.[receta.tamano];
+      const categoria = normalizarCategoria(receta.categoria_nombre);
+      const porciones = categoria === 'pizza' ? undefined : PORCIONES_TAMANO[categoria]?.[receta.tamano];
       if (
         porciones !== undefined &&
         Number(receta.ficha.porciones) > 0 &&
