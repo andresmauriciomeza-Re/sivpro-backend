@@ -33,6 +33,25 @@ test('la verificación solo acepta cantidades reales y descarta cantidad debida 
   });
 });
 
+test('una OP acepta la misma pizza en Mediana y Grande pero no repite el mismo tamaño', () => {
+  const datos = validarCrearOrdenProduccion({
+    lineas: [
+      { id_producto: 7, cantidad: 2, tamano: 'Mediana' },
+      { id_producto: 7, cantidad: 1, tamano: 'Grande' },
+    ],
+  });
+  assert.deepEqual(datos.lineas.map((l) => [l.tamano, l.cantidad]), [['Mediana', 2], ['Grande', 1]]);
+  assert.throws(
+    () => validarCrearOrdenProduccion({
+      lineas: [
+        { id_producto: 7, cantidad: 2, tamano: 'Grande' },
+        { id_producto: 7, cantidad: 1, tamano: 'Grande' },
+      ],
+    }),
+    (error) => error instanceof AppError && error.statusCode === 400,
+  );
+});
+
 test('la cantidad real de verificación debe ser un entero no negativo', () => {
   for (const cantidad_real of [-1, 1.5]) {
     assert.throws(

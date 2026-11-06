@@ -94,7 +94,33 @@ function validarPrecioVenta(valor) {
 
 function validarPrecioGrande(valor) {
   if (valor === null || (typeof valor === 'string' && !valor.trim())) return null;
-  return numero(valor, 'precio_grande');
+  const precio = numero(valor, 'precio_grande');
+  if (precio <= 0) throw new AppError('El precio por porción Grande debe ser mayor a 0.', 400);
+  return precio;
+}
+
+export function mensajeGrandeMayorQueMediana(precioMediana) {
+  return `Debe ser mayor que el precio de la porción Mediana ($${Number(precioMediana).toLocaleString('es-CO')})`;
+}
+
+/** La porción Grande siempre vale más que la Mediana (ambos > 0). */
+export function validarGrandeMayorQueMediana(precioMediana, precioGrande) {
+  if (Number(precioGrande) <= Number(precioMediana)) {
+    throw new AppError(mensajeGrandeMayorQueMediana(precioMediana), 400);
+  }
+}
+
+export function validarPreciosPizza(datos) {
+  const precioMediana = Number(datos.precio_venta);
+  const precioGrande = Number(datos.precio_grande);
+  if (
+    datos.precio_venta == null || datos.precio_grande == null
+    || !Number.isFinite(precioMediana) || precioMediana <= 0
+    || !Number.isFinite(precioGrande) || precioGrande <= 0
+  ) {
+    throw new AppError('Las pizzas deben tener precios por porción Mediana y Grande mayores a 0.', 400);
+  }
+  validarGrandeMayorQueMediana(precioMediana, precioGrande);
 }
 
 /** Campos propios de las bebidas (Reventa). En edición solo se pasan los que
@@ -138,9 +164,25 @@ function validarCamposBebida(body) {
   return salida;
 }
 
+function precioVentaOpcional(valor) {
+  if (valor === undefined || valor === null || (typeof valor === 'string' && !valor.trim())) return 0;
+  const precio = numero(valor, 'precio_venta');
+  if (precio < 0) throw new AppError('El precio de venta no puede ser negativo.', 400);
+  return precio;
+}
+
+function precioGrandeOpcional(valor) {
+  if (valor === undefined || valor === null || (typeof valor === 'string' && !valor.trim())) return 0;
+  const precio = numero(valor, 'precio_grande');
+  if (precio < 0) throw new AppError('El precio por porción Grande no puede ser negativo.', 400);
+  return precio;
+}
+
 /**
  * POST /api/productos
- * Elaborado: precio_venta > 0 obligatorio.
+ * Elaborado: precio_venta puede venir ausente o en 0 (la pizza nace sin
+ * precio y se fija al completar su primera orden); el servicio exige > 0 a
+ * todo Elaborado que no sea pizza.
  * Reventa: contenido + contenido_unidad + unidad_compra obligatorios y, si la
  * unidad de compra es paca o caja, unidades_por_empaque >= 2.
  * En Reventa el precio que traiga el body se DESCARTA: nace en 0.
@@ -158,8 +200,8 @@ export function validarCreacionProducto(body) {
   if (datos.tipo === 'Elaborado') {
     return {
       ...datos,
-      precio_venta: validarPrecioVenta(entrada.precio_venta),
-      precio_grande: entrada.precio_grande === undefined ? null : validarPrecioGrande(entrada.precio_grande),
+      precio_venta: precioVentaOpcional(entrada.precio_venta),
+      precio_grande: precioGrandeOpcional(entrada.precio_grande) || null,
       contenido: null,
       contenido_unidad: null,
       unidad_compra: null,

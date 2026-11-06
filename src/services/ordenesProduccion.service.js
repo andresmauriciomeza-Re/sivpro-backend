@@ -4,6 +4,10 @@ import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/producci
 import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
 import { validarInsumosActivos } from '../utils/validarInsumosActivos.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
+import { PORCIONES_TAMANO } from '../config/produccion.js';
+import normalizarCategoria from '../utils/normalizarCategoria.js';
+import { validarTamanoPizzaPreparacion } from '../validators/ordenesProduccion.validator.js';
+import { validarGrandeMayorQueMediana } from '../validators/productos.validator.js';
 
 const ESTADO_PENDIENTE = 'Pendiente';
 const ESTADO_EN_PROCESO = 'En proceso';
@@ -285,10 +289,12 @@ async function resolverLineas(client, lineas) {
   const idsCandidatos = [...candidatosProducto].sort((a, b) => a - b);
   if (idsCandidatos.length) {
     const { rows } = await client.query(
-      `SELECT id_producto, nombre, tipo, unidad_venta, estado
-         FROM tb_productos
-        WHERE id_producto = ANY($1::integer[])
-        ORDER BY id_producto`,
+      `SELECT p.id_producto, p.nombre, p.tipo, p.unidad_venta, p.estado,
+              c.nombre AS categoria_nombre
+         FROM tb_productos p
+         JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+        WHERE p.id_producto = ANY($1::integer[])
+        ORDER BY p.id_producto`,
       [idsCandidatos]
     );
     for (const row of rows) productos.set(Number(row.id_producto), row);
@@ -313,7 +319,10 @@ async function resolverLineas(client, lineas) {
       if (producto.tipo !== 'Elaborado') {
         throw new AppError(`«${producto.nombre}» debe ser un producto Elaborado.`, 400);
       }
-      pendientesProducto.push({ indice, linea, producto });
+      const tamano = normalizarCategoria(producto.categoria_nombre) === 'pizza'
+        ? validarTamanoPizzaPreparacion(linea.tamano, producto.nombre)
+        : linea.tamano;
+      pendientesProducto.push({ indice, linea: { ...linea, tamano }, producto });
       continue;
     }
     if (linea.id_producto != null) throw new AppError(`El producto ${id} no existe.`, 400);
@@ -375,7 +384,7 @@ async function resolverLineas(client, lineas) {
       id_producto: idProducto,
       id_ft: fichaPorProducto.get(Number(idProducto)) ?? null,
       cantidad_estimada: Number(linea.cantidad),
-      tamano: null,
+      tamano: linea.tamano ?? null,
       unidad: producto.unidad_venta || 'und',
       nombre: producto.nombre,
     };
@@ -605,6 +614,7 @@ export async function actualizarOrdenProduccion(idOrden, datos) {
         id_insumo: linea.id_insumo,
         id_producto: linea.id_producto,
         cantidad: linea.cantidad_estimada,
+        tamano: linea.tamano,
       }));
       const { calculo, detalle } = await prepararLineas(client, lineasEntrada, { bloquearInsumos: true });
       lanzarErrorFaltantes(calculo.faltantes, 'No hay la cantidad suficiente de insumos. Por favor, disminuye la cantidad.');
@@ -660,8 +670,8 @@ async function descontarInsumos(client, lineas) {
   for (const requerido of calculo.requeridos) {
     const { rowCount } = await client.query(
       `UPDATE tb_insumo
-          SET stock_actual = stock_actual - $2
-        WHERE id_insumo = $1 AND estado = TRUE AND stock_actual >= $2`,
+          SET stock_actual =           stock_actual - $2::numeric
+                  WHERE id_insumo = $1 AND estado = TRUE AND stock_actual >= $2::numeric`,
       [requerido.id_insumo, requerido.requerido]
     );
     if (!rowCount) {
@@ -784,12 +794,6 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       let lineasGeneradas = lineas;
       if (esPedido) {
         if (datos.lineas !== undefined) throw new AppError('No se puede cambiar la cantidad de un Pedido.', 400);
-        const calculoActivo = await calcularRequeridosProduccion(
-          client,
-          lineasGeneradas.filter(participaEnInsumos),
-          { bloquearInsumos: true },
-        );
-        validarInsumosActivos(calculoActivo.faltantes, 409);
       } else {
         if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
           throw new AppError('Debes enviar la nueva cantidad de todas las líneas de la preparación.', 400);
@@ -826,11 +830,11 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
         }
       }
       // Un 'Pedido' es un encargo de CALENTAMIENTO: sus productos elaborados ya
-      // descontaron sus insumos cuando esas unidades se hornearon, así que la
-      // fase de descuento no aplica. La marca queda en TRUE para que nadie
-      // (completar incluido) intente descontar insumos después.
+      // descontaron su stock al registrarse la venta, así que no valida ni
+      // descuenta insumos. La marca queda en TRUE para que nadie (completar
+      // incluido) intente descontar inventario después.
       const calculo = esPedido
-        ? { requeridos: parsearArray(row.insumos_requeridos) }
+        ? { requeridos: [] }
         : await descontarInsumos(client, lineasGeneradas.filter(participaEnInsumos));
       if (!esPedido) {
         for (const linea of lineasGeneradas) {
@@ -849,7 +853,7 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
         de: ESTADO_PENDIENTE,
         a: ESTADO_EN_PROCESO,
         fechaHora: fechaHoraBogota().timestamp,
-        ...(esPedido ? { detalle: 'Pedido (calentamiento): sin descuento de insumos.' } : {}),
+        ...(esPedido ? { detalle: 'Pedido (calentamiento): sin descuento de inventario.' } : {}),
       });
       await client.query(
         `UPDATE tb_orden_produccion
@@ -889,6 +893,43 @@ async function categoriaDeProducto(client, idProducto) {
   return String(rows[0]?.nombre ?? '').slice(0, 100) || null;
 }
 
+/** Precios por porción de una pizza al completar su OP: solo los tamaños con
+    línea en la orden deben quedar con precio > 0 (el otro puede seguir en 0:
+    no hay stock de ese tamaño). La regla Grande > Mediana aplica cuando ambos
+    precios (el enviado o el guardado) son > 0. Los precios enviados se guardan
+    en la misma transacción que la orden. */
+async function aplicarPreciosPizza(client, idProducto, nombre, datos, tamanos) {
+  const { rows } = await client.query(
+    `SELECT precio_venta, precio_grande
+       FROM tb_productos
+      WHERE id_producto = $1
+      FOR UPDATE`,
+    [idProducto]
+  );
+  const actual = rows[0];
+  if (!actual) throw new AppError(`No se encontró el producto «${nombre}».`, 409);
+  const mediana = datos.precio_mediana ?? Number(actual.precio_venta ?? 0);
+  const grande = datos.precio_grande ?? Number(actual.precio_grande ?? 0);
+  const faltantes = [];
+  if (tamanos.has('Mediana') && !(mediana > 0)) faltantes.push('Mediana');
+  if (tamanos.has('Grande') && !(grande > 0)) faltantes.push('Grande');
+  if (faltantes.length > 0) {
+    throw new AppError(
+      `Define el precio por porción ${faltantes.join(' y ')} de «${nombre}» para completar la orden.`,
+      400
+    );
+  }
+  if (mediana > 0 && grande > 0) validarGrandeMayorQueMediana(mediana, grande);
+  if (datos.precio_mediana !== undefined || datos.precio_grande !== undefined) {
+    await client.query(
+      `UPDATE tb_productos
+          SET precio_venta = $2::numeric, precio_grande = $3::numeric
+        WHERE id_producto = $1`,
+      [idProducto, mediana, grande]
+    );
+  }
+}
+
 export async function completarOrdenProduccion(idOrden, datos) {
   try {
     const resultado = await transaction(async (client) => {
@@ -911,6 +952,33 @@ export async function completarOrdenProduccion(idOrden, datos) {
 
       const verificacion = [];
       if (row.tipo === TIPO_PREPARACION) {
+        const preciosSueltos = datos.precio_mediana !== undefined || datos.precio_grande !== undefined;
+        const preciosPorProducto = new Map((datos.precios ?? []).map((p) => [p.id_producto, p]));
+        const pizzasDeOrden = new Map();
+        for (const linea of lineas) {
+          if (linea.id_producto == null) continue;
+          if (!pizzasDeOrden.has(linea.id_producto)) {
+            const categoria = await categoriaDeProducto(client, linea.id_producto);
+            if (normalizarCategoria(categoria) !== 'pizza') continue;
+            pizzasDeOrden.set(linea.id_producto, { nombre: linea.nombre, tamanos: new Set() });
+          }
+          pizzasDeOrden.get(linea.id_producto).tamanos.add(linea.tamano);
+        }
+        if (preciosSueltos && pizzasDeOrden.size > 1) {
+          throw new AppError('Con varias pizzas envía los precios por producto en el campo precios.', 400);
+        }
+        if ([...preciosPorProducto.keys()].some((id) => !pizzasDeOrden.has(id))) {
+          throw new AppError('Los precios enviados no corresponden a las pizzas de esta orden.', 400);
+        }
+        if (!row.stock_aplicado) {
+          for (const [idProducto, { nombre, tamanos }] of pizzasDeOrden) {
+            const propios = preciosPorProducto.get(idProducto) ?? {};
+            await aplicarPreciosPizza(client, idProducto, nombre, {
+              precio_mediana: propios.precio_mediana ?? datos.precio_mediana,
+              precio_grande: propios.precio_grande ?? datos.precio_grande,
+            }, tamanos);
+          }
+        }
         const cantidades = new Map(datos.lineas.map((linea) => [linea.id_detalle_op, linea.cantidad_real]));
         for (const linea of lineas) {
           const cantidadReal = cantidades.get(linea.id_detalle_op);
@@ -925,21 +993,40 @@ export async function completarOrdenProduccion(idOrden, datos) {
           const cantidadDebida = calculadoAlVerificar
             ? calculado
             : Number(linea.cantidad_debida);
+          if (cantidadReal > cantidadDebida + 0.00001) {
+            throw new AppError(
+              `No puede ser mayor que la cantidad que debías hacer (${cantidadDebida}) en «${linea.nombre}».`,
+              400
+            );
+          }
           const merma = Math.max(0, cantidadDebida - cantidadReal);
-          // Preparación con línea de producto: lo producido entra como
-          // pre-hechas de ese producto del menú (tb_productos.stock).
+          // La producción de una pizza cuenta en porciones y separa el tamaño.
           const esProducto = linea.id_producto != null;
+          const categoria = esProducto
+            ? await categoriaDeProducto(client, linea.id_producto)
+            : null;
+          const porcionesPizza = normalizarCategoria(categoria) === 'pizza'
+            ? PORCIONES_TAMANO.pizza[validarTamanoPizzaPreparacion(linea.tamano, linea.nombre)]
+            : null;
           if (!row.stock_aplicado) {
             const { rowCount } = esProducto
-              ? await client.query(
-                  `UPDATE tb_productos
-                      SET stock = stock + ROUND($2::numeric)::int
-                    WHERE id_producto = $1 AND tipo = 'Elaborado'`,
-                  [linea.id_producto, cantidadReal]
-                )
+              ? porcionesPizza != null
+                ? await client.query(
+                    `UPDATE tb_productos
+                        SET ${linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande'} =
+                            ${linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande'}                             + $2::int
+                      WHERE id_producto = $1 AND tipo = 'Elaborado'`,
+                                                [linea.id_producto, Math.round(cantidadReal * porcionesPizza)]
+                  )
+                : await client.query(
+                    `UPDATE tb_productos
+                        SET stock = stock + ROUND($2::numeric)::int
+                      WHERE id_producto = $1 AND tipo = 'Elaborado'`,
+                    [linea.id_producto, cantidadReal]
+                  )
               : await client.query(
                   `UPDATE tb_insumo
-                      SET stock_actual = stock_actual + $2
+                      SET stock_actual =                       stock_actual + $2::numeric
                     WHERE id_insumo = $1 AND tipo = 'Producto insumo'`,
                   [linea.id_insumo, cantidadReal]
                 );
@@ -964,29 +1051,29 @@ export async function completarOrdenProduccion(idOrden, datos) {
           if (merma > 0 && !row.stock_aplicado) {
             // Merma como producto no conforme (la pantalla CPN solo recarga).
             // No mueve stock: al inventario solo entró la cantidad real. Es un
-            // registro del sistema (motivo «Merma de cocina» + orden enlazada),
+            // registro del sistema (motivo «Pérdida en cocina» + orden enlazada),
             // así que no se puede borrar desde el módulo CPN.
-            const categoria = esProducto
-              ? await categoriaDeProducto(client, linea.id_producto)
-              : 'Producto insumo';
+            const cantidadMerma = porcionesPizza == null ? merma : merma * porcionesPizza;
+            const unidadMerma = porcionesPizza == null ? linea.unidad : 'porciones';
             await client.query(
               `INSERT INTO tb_productos_no_conformes
-                 (fecha_registro, tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion,
+                 (fecha_registro, tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion, tamano,
                   id_venta, cantidad_afectada, unidad_medida, motivo, descripcion_detallada,
                   estado, nombre, categoria, area_proceso, orden_ref)
-               VALUES ($1, $2, $3, $4, $5, NULL, $6, $7,
-                       'Merma de cocina', $8, 'Pendiente', $9, $10, 'Producción', $11)`,
+               VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8,
+                       'Pérdida en cocina', $9, 'Pendiente', $10, $11, 'Producción', $12)`,
               [
                 fechaHoraBogota().fecha,
                 esProducto ? 'Producto' : 'Producto insumo',
                 linea.id_producto,
                 linea.id_insumo,
                 idOrden,
-                merma,
-                linea.unidad,
+                porcionesPizza == null ? null : linea.tamano,
+                cantidadMerma,
+                unidadMerma,
                 `La cantidad estimada original fue ${linea.cantidad_estimada}; se debían hacer ${cantidadDebida} ${linea.unidad} y se obtuvieron ${cantidadReal} ${linea.unidad}.`.slice(0, 500),
                 String(linea.nombre ?? '').slice(0, 200),
-                categoria,
+                categoria ?? 'Producto insumo',
                 String(idOrden),
               ]
             );

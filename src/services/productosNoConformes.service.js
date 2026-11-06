@@ -1,23 +1,22 @@
 import AppError from '../errors/AppError.js';
 import { pool, query, transaction } from '../config/db.js';
 import { fechaHoraBogota } from '../utils/produccion.js';
+import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { MOTIVO_MERMA } from '../validators/productosNoConformes.validator.js';
 
 // Productos No Conformes (tb_productos_no_conformes).
 // Registros MANUALES (tipo Producto / Producto insumo) mueven stock en la misma
-// transacción: un producto de Reventa baja tb_productos.stock y un insumo baja
-// tb_insumo.stock_actual. Los 'Elaborado' sí tienen stock propio (las
-// pre-hechas de pizzas/lasañas) pero un registro manual NO lo mueve: esas
-// unidades las mueven la preparación, la venta y el pedido. Si la
+// transacción: una pizza baja porciones de su tamaño, un producto de Reventa
+// baja tb_productos.stock y un insumo baja tb_insumo.stock_actual. Si la
 // cantidad supera el stock se rechaza, así al eliminar (solo Pendiente) se
-// devuelve exactamente cantidad_afectada.
+// devuelve exactamente la cantidad afectada al mismo inventario.
 // Registros del SISTEMA: la merma de Orden de Producción (motivo «Merma de
 // cocina» con orden enlazada) y las devoluciones «Producto malo» (tipo Venta).
 // No mueven stock aquí y no se pueden eliminar.
 
 const COLUMNAS = `
   pnc.id_producto_no_conforme, pnc.fecha_registro::text AS fecha_registro, pnc.tipo_no_conformidad,
-  pnc.id_producto, pnc.id_insumo, pnc.id_orden_produccion, pnc.id_venta,
+  pnc.id_producto, pnc.id_insumo, pnc.id_orden_produccion, pnc.id_venta, pnc.tamano,
   pnc.cantidad_afectada, pnc.unidad_medida, pnc.motivo, pnc.descripcion_detallada,
   pnc.tipo_solucion, pnc.solucion_aplicada, pnc.foto_evidencia, pnc.estado, pnc.nombre,
   pnc.categoria, pnc.causa, pnc.area_proceso, pnc.proveedor, pnc.lote, pnc.responsable,
@@ -106,7 +105,8 @@ export async function obtenerProductoNoConforme(id) {
 async function descontarStockManual(client, datos) {
   if (datos.tipo_no_conformidad === 'Producto') {
     const { rows } = await client.query(
-      `SELECT p.id_producto, p.nombre, p.tipo, p.stock, p.unidad_venta, c.nombre AS categoria
+      `SELECT p.id_producto, p.nombre, p.tipo, p.stock, p.stock_mediana, p.stock_grande,
+              p.unidad_venta, c.nombre AS categoria
          FROM tb_productos p
          JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
         WHERE p.id_producto = $1
@@ -115,6 +115,30 @@ async function descontarStockManual(client, datos) {
     );
     const producto = rows[0];
     if (!producto) throw new AppError('El producto no existe.', 400);
+    if (normalizarCategoria(producto.categoria) === 'pizza') {
+      if (!['Mediana', 'Grande'].includes(datos.tamano)) {
+        throw new AppError(`Selecciona Mediana o Grande para ${producto.nombre}.`, 400);
+      }
+      if (!Number.isSafeInteger(datos.cantidad_afectada)) {
+        throw new AppError('La cantidad de una pizza debe ser un entero de porciones.', 400);
+      }
+      const columnaStock = datos.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
+      const stock = Number(producto[columnaStock] ?? 0);
+      if (datos.cantidad_afectada > stock) {
+        throw new AppError(`La cantidad supera el stock actual (${stock} porciones de ${datos.tamano}).`, 409);
+      }
+      await client.query(
+        `UPDATE tb_productos SET ${columnaStock} = GREATEST(0, ${columnaStock} - $2::int)
+          WHERE id_producto = $1`,
+        [producto.id_producto, datos.cantidad_afectada]
+      );
+      return {
+        nombre: producto.nombre,
+        unidad: 'porciones',
+        categoria: producto.categoria,
+        tamano: datos.tamano,
+      };
+    }
     if (producto.tipo === 'Reventa') {
       if (!Number.isInteger(datos.cantidad_afectada)) {
         throw new AppError('La cantidad de un producto de reventa debe ser un número entero.', 400);
@@ -127,7 +151,7 @@ async function descontarStockManual(client, datos) {
         [producto.id_producto, datos.cantidad_afectada]
       );
     }
-    return { nombre: producto.nombre, unidad: producto.unidad_venta, categoria: producto.categoria };
+    return { nombre: producto.nombre, unidad: producto.unidad_venta, categoria: producto.categoria, tamano: null };
   }
 
   const { rows } = await client.query(
@@ -143,10 +167,10 @@ async function descontarStockManual(client, datos) {
     throw new AppError(`La cantidad supera el stock actual (${Number(insumo.stock_actual)} ${insumo.unidad_medida}).`, 409);
   }
   await client.query(
-    'UPDATE tb_insumo SET stock_actual = GREATEST(0, stock_actual - $2) WHERE id_insumo = $1',
+    'UPDATE tb_insumo SET stock_actual = GREATEST(0, stock_actual - $2::numeric) WHERE id_insumo = $1',
     [insumo.id_insumo, datos.cantidad_afectada]
   );
-  return { nombre: insumo.nombre, unidad: insumo.unidad_medida, categoria: insumo.tipo };
+  return { nombre: insumo.nombre, unidad: insumo.unidad_medida, categoria: insumo.tipo, tamano: null };
 }
 
 export async function crearProductoNoConforme(datos) {
@@ -159,9 +183,9 @@ export async function crearProductoNoConforme(datos) {
             cantidad_afectada, unidad_medida, motivo, descripcion_detallada, tipo_solucion,
             solucion_aplicada, foto_evidencia, estado, nombre, categoria, causa, area_proceso,
             proveedor, lote, responsable, accion_tomada, accion_correctiva, fecha_limite,
-            responsable_accion, venta_ref, orden_ref)
+            responsable_accion, venta_ref, orden_ref, tamano)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Pendiente', $14, $15,
-                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
          RETURNING id_producto_no_conforme`,
         [
           datos.fecha_registro, datos.tipo_no_conformidad, datos.id_producto, datos.id_insumo,
@@ -173,6 +197,7 @@ export async function crearProductoNoConforme(datos) {
           datos.fecha_limite, datos.responsable_accion,
           datos.id_venta == null ? null : String(datos.id_venta),
           datos.id_orden_produccion == null ? null : String(datos.id_orden_produccion),
+          catalogo.tamano,
         ]
       );
       return mapearRegistro(await obtenerEnConexion(client, rows[0].id_producto_no_conforme));
@@ -234,18 +259,27 @@ export async function eliminarProductoNoConforme(id) {
       const actual = await obtenerEnConexion(client, id, { bloquear: true });
       if (actual.estado !== 'Pendiente') throw new AppError('Solo se pueden eliminar registros Pendientes.', 409);
       if (esDelSistema(actual)) {
-        throw new AppError('Este registro lo generó el sistema (merma de producción o devolución): no se puede eliminar.', 409);
+        throw new AppError('Este registro lo generó el sistema (pérdida de producción o devolución): no se puede eliminar.', 409);
       }
       const cantidad = Number(actual.cantidad_afectada);
       if (actual.tipo_no_conformidad === 'Producto' && actual.id_producto != null) {
-        await client.query(
-          `UPDATE tb_productos SET stock = stock + ROUND($2::numeric)::int
-            WHERE id_producto = $1 AND tipo = 'Reventa'`,
-          [actual.id_producto, cantidad]
-        );
+        if (actual.tamano === 'Mediana' || actual.tamano === 'Grande') {
+          const columnaStock = actual.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
+          await client.query(
+            `UPDATE tb_productos SET ${columnaStock} =             ${columnaStock} + $2::int
+              WHERE id_producto = $1 AND tipo = 'Elaborado'`,
+            [actual.id_producto, cantidad]
+          );
+        } else {
+          await client.query(
+            `UPDATE tb_productos SET stock = stock + ROUND($2::numeric)::int
+              WHERE id_producto = $1 AND tipo = 'Reventa'`,
+            [actual.id_producto, cantidad]
+          );
+        }
       } else if (actual.tipo_no_conformidad === 'Producto insumo' && actual.id_insumo != null) {
         await client.query(
-          'UPDATE tb_insumo SET stock_actual = stock_actual + $2 WHERE id_insumo = $1',
+          'UPDATE tb_insumo SET stock_actual = stock_actual + $2::numeric WHERE id_insumo = $1',
           [actual.id_insumo, cantidad]
         );
       }

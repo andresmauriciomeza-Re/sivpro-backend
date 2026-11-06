@@ -6,7 +6,7 @@ const normalizarNombre = (valor) => {
     .map((palabra, indice) => indice > 0 && excepciones.has(palabra) ? palabra : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
 };
 import { query, transaction } from '../config/db.js';
-import { RECARGO_PIZZA_GRANDE, ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
+import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, puedeTransicionarVenta } from '../config/ventas.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
@@ -61,12 +61,7 @@ function precioYTamano(producto, tamano) {
   const tipo = producto.tipo;
   if (tipo === 'Elaborado' && categoria === 'pizza') {
     if (!['Mediana', 'Grande'].includes(tamano)) throw new AppError(`Selecciona Mediana o Grande para ${producto.nombre}.`, 400);
-    if (tamano === 'Grande') {
-      return producto.precio_grande == null
-        ? Number(producto.precio_venta) + RECARGO_PIZZA_GRANDE
-        : Number(producto.precio_grande);
-    }
-    return Number(producto.precio_venta);
+    return tamano === 'Grande' ? Number(producto.precio_grande) : Number(producto.precio_venta);
   }
   if (tipo === 'Elaborado' && categoria === 'lasana') {
     if (tamano !== 'Normal') throw new AppError(`El tamaño de ${producto.nombre} debe ser Normal.`, 400);
@@ -79,7 +74,7 @@ function precioYTamano(producto, tamano) {
   throw new AppError(`El producto ${producto.nombre} tiene categoría o tipo no soportado para ventas.`, 400);
 }
 
-function validarProductosDeBase(lineas, productos) {
+export function validarProductosDeBase(lineas, productos) {
   const porId = new Map(productos.map((producto) => [Number(producto.id_producto), producto]));
   if (lineas.some((linea) => {
     const producto = porId.get(linea.idProducto);
@@ -89,13 +84,20 @@ function validarProductosDeBase(lineas, productos) {
   }
 
   const cantidadesReventa = new Map();
+  const cantidadesPizza = new Map();
+  const cantidadesLasana = new Map();
   for (const linea of lineas) {
     const producto = porId.get(linea.idProducto);
     if (producto.tipo === 'Reventa') {
       cantidadesReventa.set(linea.idProducto, (cantidadesReventa.get(linea.idProducto) || 0) + linea.cantidad);
+    } else if (normalizarCategoria(producto.categoria_nombre) === 'pizza') {
+      const clave = `${linea.idProducto}:${linea.tamano}`;
+      cantidadesPizza.set(clave, (cantidadesPizza.get(clave) || 0) + linea.cantidad);
+    } else if (normalizarCategoria(producto.categoria_nombre) === 'lasana') {
+      cantidadesLasana.set(linea.idProducto, (cantidadesLasana.get(linea.idProducto) || 0) + linea.cantidad);
     }
   }
-  for (const [idProducto, cantidad] of cantidadesReventa) {
+  for (const [idProducto, cantidad] of [...cantidadesReventa, ...cantidadesLasana]) {
     const producto = porId.get(idProducto);
     const stock = Number(producto.stock);
     if (cantidad > stock) {
@@ -108,15 +110,39 @@ function validarProductosDeBase(lineas, productos) {
     }
   }
 
-  return lineas.map((linea) => {
+  const calculadas = lineas.map((linea) => {
     const producto = porId.get(linea.idProducto);
     const precio = precioYTamano(producto, linea.tamano);
     const subtotal = precio * linea.cantidad;
-    if (!Number.isFinite(precio) || precio < 0 || !Number.isFinite(subtotal)) {
+    if (!Number.isFinite(precio) || precio <= 0 || !Number.isFinite(subtotal)) {
       throw new AppError('El precio calculado no es válido.', 400);
     }
     return { ...linea, producto, precio, subtotal };
   });
+  for (const [clave, requerido] of cantidadesPizza) {
+    const [idProducto, tamano] = clave.split(':');
+    const producto = porId.get(Number(idProducto));
+    const columnaStock = tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
+    const stock = Number(producto[columnaStock] ?? 0);
+    if (requerido > stock) {
+      const error = new AppError(
+        `Solo hay ${stock} porciones de ${producto.nombre} ${tamano}.`,
+        409,
+      );
+      error.faltantes = [{
+        id_insumo: null,
+        id_producto: Number(idProducto),
+        nombre: producto.nombre,
+        requerido,
+        stock,
+        falta: requerido - stock,
+        unidad: 'porciones',
+        motivo: null,
+      }];
+      throw error;
+    }
+  }
+  return calculadas;
 }
 
 async function resolverClienteToken(client, idUsuario) {
@@ -219,7 +245,8 @@ async function cargarProductosParaVenta(client, lineas) {
   const ids = lineas.map((linea) => linea.idProducto);
   const { rows } = await client.query(
     `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo, p.precio_venta,
-            p.unidad_venta, p.stock, p.precio_grande, p.estado, c.nombre AS categoria_nombre,
+            p.unidad_venta, p.stock, p.stock_mediana, p.stock_grande,
+            p.precio_grande, p.estado, c.nombre AS categoria_nombre,
             c.estado AS categoria_activa
        FROM tb_productos p
        JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
@@ -229,6 +256,43 @@ async function cargarProductosParaVenta(client, lineas) {
     [ids]
   );
   return validarProductosDeBase(lineas, rows);
+}
+
+async function descontarInventarioVentaPanel(client, lineas) {
+  for (const linea of lineas) {
+    const producto = linea.producto;
+    const esPizza = normalizarCategoria(producto.categoria_nombre) === 'pizza';
+    const columnaStock = esPizza
+      ? (linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande')
+      : 'stock';
+    const { rows } = await client.query(
+      `UPDATE tb_productos SET ${columnaStock} =       ${columnaStock} - $1::int
+              WHERE id_producto = $2 AND ${columnaStock} >= $1::int
+        RETURNING id_producto`,
+      [linea.cantidad, linea.idProducto]
+    );
+    if (!rows[0]) {
+      if (esPizza) {
+        const stock = Number(producto[columnaStock] ?? 0);
+        const error = new AppError(
+          `Solo hay ${stock} porciones de ${producto.nombre} ${linea.tamano}.`,
+          409
+        );
+        error.faltantes = [{
+          id_insumo: null,
+          id_producto: Number(linea.idProducto),
+          nombre: producto.nombre,
+          requerido: Number(linea.cantidad),
+          stock,
+          falta: Math.max(0, Number(linea.cantidad) - stock),
+          unidad: 'porciones',
+          motivo: null,
+        }];
+        throw error;
+      }
+      throw new AppError(`Stock insuficiente para ${producto.nombre}.`, 409);
+    }
+  }
 }
 
 function mapearError(error) {
@@ -243,19 +307,20 @@ function mapearError(error) {
   return new AppError('No se pudo completar la operación de ventas.', 503);
 }
 
-async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago }) {
-  // El panel ya no pide hora (pedido tomado en el local): si no viene, se
-  // auto-asigna "ahora + MINUTOS_PREPARACION_PANEL". La validación de PM y
-  // hora futura aplica sólo cuando el cliente sí eligió hora en el checkout.
-  const horaFinal = horaRecogida || horaAutoPreparacion();
+async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago, ventaPanel = false }) {
+  // El panel registra una venta de producto listo para entrega inmediata. La
+  // tienda conserva la hora automática de preparación cuando no viene una.
   const momento = horaRecogida ? validarFechaRecogida(horaRecogida) : fechaHoraBogota();
+  const horaFinal = horaRecogida || (ventaPanel
+    ? momento.timestamp.slice(11, 19)
+    : horaAutoPreparacion());
   const productosCalculados = await cargarProductosParaVenta(client, lineas);
   const total = productosCalculados.reduce((suma, linea) => suma + linea.subtotal, 0);
   if (!Number.isFinite(total) || total < 0) throw new AppError('El total calculado no es válido.', 400);
   const venta = await client.query(
     `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado)
      VALUES ($1, $2, $3, $4, $5, $2) RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado`,
-    [idCliente, momento.timestamp, horaFinal, total, ESTADOS_VENTA.POR_VERIFICAR]
+    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.COMPLETADO : ESTADOS_VENTA.POR_VERIFICAR]
   );
   const idVenta = venta.rows[0].id_venta;
   for (const linea of productosCalculados) {
@@ -270,9 +335,10 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
   const pagoInsertado = await client.query(
     `INSERT INTO tb_pagos
        (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado)
-     VALUES ($1, $2, $3, $4, $5, 0, 'Pendiente') RETURNING id_pago`,
-    [idVenta, pago.tipo, pago.comprobante, total, montoPagadoInicial]
+     VALUES ($1, $2, $3, $4, $5, 0, $6) RETURNING id_pago`,
+    [idVenta, pago.tipo, pago.comprobante, total, montoPagadoInicial, ventaPanel ? 'Verificado' : 'Pendiente']
   );
+  if (ventaPanel) await descontarInventarioVentaPanel(client, productosCalculados);
   return { ...venta.rows[0], id_venta: Number(idVenta), pagos: [{ id_pago: Number(pagoInsertado.rows[0].id_pago), ...pago, depositado: montoPagadoInicial }] };
 }
 
@@ -291,7 +357,7 @@ export async function crearVentaPanel(datosCliente, entrada) {
   try {
     const venta = await transaction(async (client) => {
       const idCliente = await resolverOCrearClientePanel(client, datosCliente);
-      return crearVentaEnTransaccion({ client, idCliente, ...entrada });
+      return crearVentaEnTransaccion({ client, idCliente, ...entrada, ventaPanel: true });
     });
     void notificarEstadoPedido(venta.id_venta);
     return venta;
@@ -388,21 +454,48 @@ export async function verificarVenta(idVenta, datos) {
     local, la falta de producto y "Otro" devuelven el 100 % del total. */
 const porcentajeReembolso = (motivo) => (motivo === 'Cliente canceló el pedido' ? 0.8 : 1);
 
+async function devolverInventarioVentaPanel(client, idVenta) {
+  const { rows: lineas } = await client.query(
+    `SELECT dv.id_producto, dv.cantidad, dv.tamano, p.tipo,
+            c.nombre AS categoria_nombre, p.nombre
+       FROM tb_detalle_venta dv
+       JOIN tb_productos p ON p.id_producto = dv.id_producto
+       JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+      WHERE dv.id_venta = $1
+      ORDER BY dv.id_detalle_venta
+      FOR UPDATE OF p`,
+    [idVenta]
+  );
+  for (const linea of lineas) {
+    const esPizza = normalizarCategoria(linea.categoria_nombre) === 'pizza';
+    if (esPizza && !['Mediana', 'Grande'].includes(linea.tamano)) {
+      throw new AppError(`No se puede devolver el stock de ${linea.nombre} sin tamaño válido.`, 409);
+    }
+    const columnaStock = esPizza
+      ? (linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande')
+      : 'stock';
+    await client.query(
+      `UPDATE tb_productos SET ${columnaStock} =       ${columnaStock} + $1::int
+        WHERE id_producto = $2`,
+      [linea.cantidad, linea.id_producto]
+    );
+  }
+}
+
 /**
  * Anula una venta desde el listado del panel, TODO en una sola transacción:
  *
- * 1. bloquea la fila y exige un estado anulable (Por verificar, En espera o
- *    Por entregar) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
+ * 1. bloquea la fila y exige un estado anulable (incluida una venta del panel
+ *    Completada y sin OP Pedido) y menos de 10 minutos desde `tb_venta.fecha`. Los 10
  *    minutos se miden AQUÍ, contra el reloj de la base en la misma convención
  *    con la que se guardó esa fecha (hora naive de Bogotá), nunca con el
  *    reloj del navegador.
  * 2. deja la venta en 'Anulado' con `motivo_rechazo`, `anulado_por` =
  *    'Administrador', `monto_reembolso` y `comprobante_anulacion`, y marca
  *    sus pagos como 'Rechazado'.
- * 3. si la venta ya estaba "Por entregar", cancela su orden de producción
- *    (estado 'Cancelada' con fecha_cancelada) y le devuelve al stock las
- *    bebidas que esa orden había descontado, y los elaborados (pre-hechas)
- *    sólo si esa orden descontó stock (productos_descontados).
+ * 3. si la venta ya estaba "Por entregar", cancela su orden de producción;
+ *    si es una venta de panel completada sin OP, devuelve directamente el
+ *    stock que la venta descontó.
  */
 export async function anularVenta(idVenta, datos) {
   try {
@@ -417,7 +510,8 @@ export async function anularVenta(idVenta, datos) {
       );
       const venta = rows[0];
       if (!venta) throw new AppError('Venta no encontrada.', 404);
-      if (!puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.ANULADO)) {
+      const ventaPanelCompletada = venta.estado === ESTADOS_VENTA.COMPLETADO;
+      if (!ventaPanelCompletada && !puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.ANULADO)) {
         throw new AppError(`Transición no permitida: ${venta.estado} → Anulado.`, 409);
       }
       const transcurridos = Number(venta.transcurridos ?? 0);
@@ -428,6 +522,19 @@ export async function anularVenta(idVenta, datos) {
       const motivo = validarMotivoAnulacion(datos.motivo);
       const monto = Number(venta.monto);
       const montoReembolso = Math.round(monto * porcentajeReembolso(motivo) * 100) / 100;
+
+      if (ventaPanelCompletada) {
+        const { rows: ordenes } = await client.query(
+          `SELECT id_orden_produccion FROM tb_orden_produccion
+            WHERE id_venta = $1 AND tipo = 'Pedido'
+            ORDER BY id_orden_produccion LIMIT 1 FOR UPDATE`,
+          [idVenta]
+        );
+        if (ordenes[0]) {
+          throw new AppError('La venta completada ya tiene una orden de producción y no puede anularse por este flujo.', 409);
+        }
+        await devolverInventarioVentaPanel(client, idVenta);
+      }
 
       const idOrdenCancelada = venta.estado === ESTADOS_VENTA.POR_ENTREGAR
         ? await cancelarOrdenProduccionDeVenta(client, idVenta)
