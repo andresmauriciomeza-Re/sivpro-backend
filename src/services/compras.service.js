@@ -237,7 +237,7 @@ async function aplicarStockInsumo(client, item, importe, iva) {
   const costoUnitario = redondearDosDecimales(importe.subtotal / unidades);
   await client.query(
     `UPDATE tb_insumo
-        SET stock_actual = stock_actual + $2, costo_unitario = $3, iva = $4
+        SET stock_actual = stock_actual + $2::numeric, costo_unitario = $3, iva = $4
       WHERE id_insumo = $1`,
     [item.id_insumo, unidades, costoUnitario, iva]
   );
@@ -429,8 +429,8 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
       }
       const unidades = convertirCantidadCompra(detalle.cantidad, detalle.medida, insumo.unidad_medida, insumo.nombre);
       const { rowCount } = await client.query(
-        `UPDATE tb_insumo SET stock_actual = stock_actual - $2
-          WHERE id_insumo = $1 AND stock_actual >= $2`,
+        `UPDATE tb_insumo SET         stock_actual = stock_actual - $2::numeric
+                  WHERE id_insumo = $1 AND stock_actual >= $2::numeric`,
         [detalle.id_insumo, unidades]
       );
       if (!rowCount) {

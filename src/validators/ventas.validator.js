@@ -80,9 +80,12 @@ function validarLineas(lineas) {
     if (!Number.isSafeInteger(cantidad) || cantidad <= 0) {
       throw new AppError('La cantidad de cada producto debe ser un entero mayor que cero.', 400);
     }
-    if (vistos.has(idProducto)) throw new AppError('No repitas productos en las líneas; consolida su cantidad.', 400);
-    vistos.add(idProducto);
     const tamano = linea?.tamano == null || linea.tamano === '' ? null : texto(linea.tamano, 'tamano', 20);
+    const clave = `${idProducto}:${tamano ?? ''}`;
+    if (vistos.has(clave) && !['Mediana', 'Grande'].includes(tamano)) {
+      throw new AppError('No repitas el mismo producto y tamaño en las líneas; consolida su cantidad.', 400);
+    }
+    vistos.add(clave);
     return { idProducto, cantidad, tamano };
   });
 }

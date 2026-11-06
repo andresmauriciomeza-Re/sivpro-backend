@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import { transaction } from '../config/db.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { redondearDosDecimales } from '../utils/insumos.js';
+import { validarPreciosPizza } from '../validators/productos.validator.js';
 
 /** Categorías que exigen un único tipo de producto. Las que no están en la
     lista (p. ej. "pollo") aceptan tanto Elaborado como Reventa. */
@@ -24,6 +25,7 @@ function verificarCoherenciaTipoCategoria(nombreCategoria, tipo) {
 const COLUMNAS_GESTION = `
   p.id_producto, p.id_categoria, p.nombre, p.tipo,
   p.precio_venta, p.costo_unitario, p.unidad_venta, p.stock,
+  p.stock_mediana, p.stock_grande,
   p.imagen, p.estado,
   p.contenido, p.contenido_unidad, p.unidad_compra,
   p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
@@ -32,14 +34,12 @@ const COLUMNAS_GESTION = `
   c.emoji AS categoria_emoji, c.estado AS categoria_estado,
   p.precio_grande`;
 
-function validarPrecioGrande(tipo, nombreCategoria, precioVenta, precioGrande) {
+function validarPrecioGrande(tipo, nombreCategoria, precioGrande) {
   if (precioGrande === null || precioGrande === undefined) return;
   if (tipo !== 'Elaborado' || normalizarCategoria(nombreCategoria) !== 'pizza') {
     throw new AppError('Solo las pizzas tienen precio para tamaño Grande', 400);
   }
-  if (Number(precioGrande) <= Number(precioVenta)) {
-    throw new AppError('El precio Grande debe ser mayor que el precio Mediana', 400);
-  }
+  if (Number(precioGrande) < 0) throw new AppError('El precio por porción Grande debe ser mayor a 0.', 400);
 }
 
 async function traerProductoGestion(conexion, idProducto) {
@@ -72,9 +72,6 @@ async function categoriaActiva(conexion, idCategoria) {
     nombre repetido de tb_productos traducido a su propio mensaje. */
 function mapearError(error) {
   if (error instanceof AppError) return error;
-  if (error?.code === '23514' && error?.constraint === 'ck_productos_precio_grande') {
-    return new AppError('El precio Grande debe ser mayor que el precio Mediana', 400);
-  }
   if (error?.code === '23505') {
     if (error?.constraint === 'tb_productos_nombre_key') {
       return new AppError('Ya existe un producto con ese nombre', 409);
@@ -102,7 +99,17 @@ export async function crearProducto(datos) {
   try {
     return await transaction(async (client) => {
       const categoria = await categoriaActiva(client, datos.id_categoria);
-      validarPrecioGrande(datos.tipo, categoria.nombre, datos.precio_venta, datos.precio_grande);
+      validarPrecioGrande(datos.tipo, categoria.nombre, datos.precio_grande);
+      const esPizza = normalizarCategoria(categoria.nombre) === 'pizza';
+      const precioVentaNuevo = Number(datos.precio_venta ?? 0);
+      let precioGrandeNuevo = datos.precio_grande;
+      if (esPizza) {
+        // La pizza nace sin precio (0 en ambos tamaños); se fija al completar su OP.
+        if (precioVentaNuevo > 0 || Number(precioGrandeNuevo ?? 0) > 0) validarPreciosPizza(datos);
+        else precioGrandeNuevo = 0;
+      } else if (datos.tipo === 'Elaborado' && !(precioVentaNuevo > 0)) {
+        throw new AppError('El precio de venta debe ser mayor a 0.', 400);
+      }
       verificarCoherenciaTipoCategoria(categoria.nombre, datos.tipo);
 
       const esElaborado = datos.tipo === 'Elaborado';
@@ -123,8 +130,8 @@ export async function crearProducto(datos) {
           datos.tipo,
           datos.unidad_venta,
           datos.imagen,
-          esElaborado ? datos.precio_venta : 0,
-          datos.precio_grande,
+          esElaborado ? precioVentaNuevo : 0,
+          precioGrandeNuevo,
           'No disponible',
           datos.contenido,
           datos.contenido_unidad,
@@ -184,7 +191,8 @@ function combinarBebida(actual, datos) {
 /**
  * PUT /api/productos/:id — actualización parcial.
  * Cambia nombre, id_categoria, unidad_venta, imagen y, en bebidas, los campos
- * de contenido/empaque. En Elaborado puede cambiar precio_venta (> 0).
+ * de contenido/empaque. En Elaborado puede cambiar precio_venta (> 0); en
+ * Pizza también precio_grande (> 0), ambos por porción.
  * NUNCA cambia tipo ni stock; en Reventa ignora precio_venta, costo_unitario
  * y stock aunque vengan en el body.
  */
@@ -227,7 +235,16 @@ export async function editarProducto(idProducto, datos) {
       const precioGrandeFinal = datos.precio_grande !== undefined
         ? datos.precio_grande
         : actual.precio_grande;
-      validarPrecioGrande(actual.tipo, categoriaFinal.nombre, precioVentaFinal, precioGrandeFinal);
+      validarPrecioGrande(actual.tipo, categoriaFinal.nombre, precioGrandeFinal);
+      if (
+        normalizarCategoria(categoriaFinal.nombre) === 'pizza'
+        && (datos.precio_venta !== undefined || datos.precio_grande !== undefined)
+      ) {
+        validarPreciosPizza({
+          precio_venta: precioVentaFinal,
+          precio_grande: precioGrandeFinal,
+        });
+      }
 
       if (actual.tipo === 'Reventa') {
         Object.assign(cambios, combinarBebida(actual, datos));
@@ -256,8 +273,7 @@ export async function editarProducto(idProducto, datos) {
 
 /**
  * PATCH /api/productos/:id/estado
- * Los cambios manuales permiten descontinuar o devolver el producto al estado
- * automático, que el trigger resuelve según el stock.
+ * Los cambios manuales permiten descontinuar o poner disponible según stock.
  */
 export async function cambiarEstadoProducto(idProducto, estado) {
   try {
@@ -267,15 +283,33 @@ export async function cambiarEstadoProducto(idProducto, estado) {
       }
 
       const { rows } = await client.query(
-        `SELECT id_producto, tipo, precio_venta
-           FROM tb_productos
-          WHERE id_producto = $1
-          FOR UPDATE`,
+        `SELECT p.id_producto, p.tipo, p.precio_venta, p.precio_grande, p.estado,
+                p.stock, p.stock_mediana, p.stock_grande,
+                c.nombre AS categoria_nombre
+           FROM tb_productos p
+           JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+          WHERE p.id_producto = $1
+          FOR UPDATE OF p`,
         [idProducto]
       );
       const actual = rows[0];
       if (!actual) throw new AppError('Producto no encontrado.', 404);
 
+      // Reactivar una pizza exige precios por porción válidos (Grande > Mediana > 0).
+      if (
+        estado === 'Automático' &&
+        actual.estado === 'Descontinuado' &&
+        normalizarCategoria(actual.categoria_nombre) === 'pizza'
+      ) {
+        const mediana = Number(actual.precio_venta ?? 0);
+        const grande = Number(actual.precio_grande ?? 0);
+        if (!(mediana > 0) || !(grande > 0) || grande <= mediana) {
+          throw new AppError(
+            'No se puede reactivar la pizza: sus precios por porción deben ser mayores a 0 y la Grande mayor que la Mediana. Primero ajusta los precios en Editar.',
+            400
+          );
+        }
+      }
       if (
         estado === 'Automático' &&
         actual.tipo === 'Reventa' &&
@@ -287,12 +321,37 @@ export async function cambiarEstadoProducto(idProducto, estado) {
         );
       }
 
-      const estadoFinal = estado === 'Automático' ? 'No disponible' : estado;
+      const esPizza = normalizarCategoria(actual.categoria_nombre) === 'pizza';
+      const stockMediana = Number(actual.stock_mediana ?? 0);
+      const stockGrande = Number(actual.stock_grande ?? 0);
+      const tieneStock = esPizza
+        ? stockMediana + stockGrande > 0
+        : Number(actual.stock ?? 0) > 0;
+      if (estado === 'Automático' && tieneStock) {
+        const mediana = Number(actual.precio_venta ?? 0);
+        const grande = Number(actual.precio_grande ?? 0);
+        if (esPizza) {
+          if ((stockMediana > 0 && !(mediana > 0)) ||
+              (stockGrande > 0 && !(grande > 0)) ||
+              (mediana > 0 && grande > 0 && grande <= mediana)) {
+            throw new AppError('No se puede poner disponible la pizza: revisa los precios por porción en Editar.', 400);
+          }
+        } else if (!(mediana > 0)) {
+          throw new AppError('El producto debe tener un precio de venta mayor a 0 para estar disponible.', 400);
+        }
+      }
+
+      const estadoFinal = estado === 'Automático'
+        ? (tieneStock ? 'Disponible' : 'No disponible')
+        : estado;
       await client.query(`UPDATE tb_productos SET estado = $2 WHERE id_producto = $1`, [
         idProducto,
         estadoFinal,
       ]);
-      return await traerProductoGestion(client, idProducto);
+      const producto = await traerProductoGestion(client, idProducto);
+      return estado === 'Automático' && !tieneStock
+        ? { ...producto, mensaje: 'Se reactivó, pero queda No disponible porque no tiene stock' }
+        : producto;
     });
   } catch (error) {
     throw mapearError(error);

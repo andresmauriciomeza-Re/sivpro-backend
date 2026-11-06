@@ -9,14 +9,14 @@ export const TIPOS_SOLUCION_PNC = ['Reposicion', 'Reproceso', 'Reembolso'];
 // devolución; a mano solo se registran productos y productos insumo.
 const TIPOS_MANUALES = ['Producto', 'Producto insumo'];
 // Motivo reservado para la merma que registra Orden de Producción.
-export const MOTIVO_MERMA = 'Merma de cocina';
+export const MOTIVO_MERMA = 'Pérdida en cocina';
 
 const MAX_TEXTO_LARGO = 2000;
 const PREFIJO_CLOUDINARY = 'https://res.cloudinary.com/';
 
 // Campos que el frontend puede enviar al crear y al editar (lista blanca).
 const CAMPOS_CREAR = [
-  'tipo_no_conformidad', 'id_producto', 'id_insumo', 'id_orden_produccion', 'id_venta',
+  'tipo_no_conformidad', 'id_producto', 'id_insumo', 'id_orden_produccion', 'id_venta', 'tamano',
   'fecha_registro', 'cantidad_afectada', 'motivo', 'descripcion_detallada', 'categoria',
   'causa', 'area_proceso', 'proveedor', 'lote', 'responsable', 'accion_tomada',
   'accion_correctiva', 'fecha_limite', 'responsable_accion', 'tipo_solucion',
@@ -74,6 +74,14 @@ function textoOpcional(valor, campo, max) {
     throw new AppError(`El campo ${campo} no puede superar ${max} caracteres.`, 400);
   }
   return valor.trim() || null;
+}
+
+function tamanoOpcional(valor) {
+  const tamano = textoOpcional(valor, 'tamano', 20);
+  if (tamano !== null && !['Mediana', 'Grande', 'Normal'].includes(tamano)) {
+    throw new AppError('El tamaño no es válido.', 400);
+  }
+  return tamano;
 }
 
 function fecha(valor, campo) {
@@ -184,6 +192,7 @@ export function validarCrearProductoNoConforme(body) {
     id_insumo: idInsumo,
     id_orden_produccion: enteroOpcional(entrada.id_orden_produccion, 'id_orden_produccion'),
     id_venta: enteroOpcional(entrada.id_venta, 'id_venta'),
+    tamano: tamanoOpcional(entrada.tamano),
     fecha_registro: fechaRegistro,
     cantidad_afectada: cantidad,
     motivo,
