@@ -6,10 +6,10 @@ export const RECARGO_PIZZA_GRANDE = 2000;
 export const MINUTOS_ANULACION = 10;
 export const SEGUNDOS_ANULACION = MINUTOS_ANULACION * 60;
 
-/** Pedidos tomados en el local (panel): el formulario no pide hora de
-    recogida, así que el backend auto-asigna "ahora + estos minutos", que es
-    lo que demora la preparación de la pizza. */
+/** Tiempo de preparación usado cuando un pedido no indica hora de recogida. */
 export const MINUTOS_PREPARACION_PANEL = 25;
+/** Tiempo para completar automáticamente una venta registrada en el local. */
+export const MINUTOS_COMPLETAR_VENTA_LOCAL = 25;
 
 export const ESTADOS_VENTA = Object.freeze({
   POR_VERIFICAR: 'Por verificar',

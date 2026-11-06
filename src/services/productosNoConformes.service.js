@@ -1,4 +1,5 @@
 import AppError from '../errors/AppError.js';
+import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
 import { pool, query, transaction } from '../config/db.js';
 import { fechaHoraBogota } from '../utils/produccion.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
@@ -105,7 +106,7 @@ export async function obtenerProductoNoConforme(id) {
 async function descontarStockManual(client, datos) {
   if (datos.tipo_no_conformidad === 'Producto') {
     const { rows } = await client.query(
-      `SELECT p.id_producto, p.nombre, p.tipo, p.stock, p.stock_mediana, p.stock_grande,
+      `SELECT p.id_producto, p.nombre, p.tipo, p.stock, p.stock_partes,
               p.unidad_venta, c.nombre AS categoria
          FROM tb_productos p
          JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
@@ -122,15 +123,13 @@ async function descontarStockManual(client, datos) {
       if (!Number.isSafeInteger(datos.cantidad_afectada)) {
         throw new AppError('La cantidad de una pizza debe ser un entero de porciones.', 400);
       }
-      const columnaStock = datos.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
-      const stock = Number(producto[columnaStock] ?? 0);
-      if (datos.cantidad_afectada > stock) {
-        throw new AppError(`La cantidad supera el stock actual (${stock} porciones de ${datos.tamano}).`, 409);
-      }
+      const partes = partesPizza(datos.cantidad_afectada, datos.tamano);
+      const stock = Number(producto.stock_partes ?? 0);
+      if (partes > stock) throw errorStockPizza(producto.nombre, stock);
       await client.query(
-        `UPDATE tb_productos SET ${columnaStock} = GREATEST(0, ${columnaStock} - $2::int)
+        `UPDATE tb_productos SET stock_partes = stock_partes - $2::int
           WHERE id_producto = $1`,
-        [producto.id_producto, datos.cantidad_afectada]
+        [producto.id_producto, partes]
       );
       return {
         nombre: producto.nombre,
@@ -264,11 +263,10 @@ export async function eliminarProductoNoConforme(id) {
       const cantidad = Number(actual.cantidad_afectada);
       if (actual.tipo_no_conformidad === 'Producto' && actual.id_producto != null) {
         if (actual.tamano === 'Mediana' || actual.tamano === 'Grande') {
-          const columnaStock = actual.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
           await client.query(
-            `UPDATE tb_productos SET ${columnaStock} =             ${columnaStock} + $2::int
+            `UPDATE tb_productos SET stock_partes = stock_partes + $2::int
               WHERE id_producto = $1 AND tipo = 'Elaborado'`,
-            [actual.id_producto, cantidad]
+            [actual.id_producto, partesPizza(cantidad, actual.tamano)]
           );
         } else {
           await client.query(

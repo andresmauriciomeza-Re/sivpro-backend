@@ -95,6 +95,29 @@ Todos los errores responden con el formato:
 
 ## Endpoints
 
+### Preparación de pizzas
+
+Las líneas nuevas de preparación de pizzas se crean sin `tamano`: `cantidad`
+representa pizzas completas. Al completar se envían `id_detalle_op` y
+`cantidad_real`; cada pizza suma 24 partes de inventario compartido. Una
+porción mediana consume 3 partes y una grande 4. Los productos exponen
+`stock_partes`, `disponibles_mediana` y `disponibles_grande`; ambas
+disponibilidades comparten el mismo inventario y no se pueden sumar.
+Se exigen precios positivos para ambos tamaños. Las líneas antiguas con
+tamaño también producen 24 partes por pizza.
+
+Las preparaciones en proceso se completan automáticamente al cumplirse su
+tiempo estimado, o pueden completarse manualmente antes. Si falta un precio
+de pizza, el avance automático lo asigna a partir de los costos y deja aviso
+en el historial. Si faltan datos de costos o no se puede asignar un precio
+válido sin cambiar el existente, la orden queda en proceso y el error se
+registra en el servidor.
+
+La migración [017_stock_pizza_partes.sql](migrations/017_stock_pizza_partes.sql)
+requiere las migraciones anteriores y debe ejecutarse una sola vez antes de
+desplegar el backend actualizado. Los clientes deben adaptarse al nuevo
+contrato antes de utilizarlo.
+
 ### Salud
 
 | Método | Ruta | Auth | Descripción |

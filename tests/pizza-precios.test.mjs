@@ -39,6 +39,7 @@ function clientePizza(producto, segundo) {
       const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
       estado.consultas.push({ consulta, params });
       if (consulta === 'begin' || consulta === 'commit' || consulta === 'rollback') return { rows: [] };
+      if (consulta.startsWith('select v.id_venta from tb_venta v')) return { rows: [] };
       if (consulta.includes('from tb_orden_produccion op')) return { rows: [{ ...orden }] };
       if (consulta.includes('from tb_detalle_orden_produccion d')) return { rows: lineas.map((l) => ({ ...l })) };
       if (consulta.startsWith('select c.nombre from tb_productos p')) return { rows: [{ nombre: 'Pizza' }] };
@@ -86,7 +87,7 @@ test('completar OP de pizza con precios los guarda en tb_productos', async () =>
   await conCliente(client, () => completarOrdenProduccion(55, datos));
   assert.deepEqual(client.estado.producto, { precio_venta: 1200, precio_grande: 1500 });
   const idxPrecio = client.estado.consultas.findIndex((c) => c.consulta.includes('precio_venta = $2::numeric'));
-  const idxStock = client.estado.consultas.findIndex((c) => c.consulta.includes('stock_mediana ='));
+  const idxStock = client.estado.consultas.findIndex((c) => c.consulta.includes('stock_partes ='));
   assert.ok(idxPrecio >= 0 && idxStock > idxPrecio, 'los precios se guardan antes de sumar el stock');
 });
 
@@ -96,7 +97,7 @@ test('completar OP de pizza con precio 0 y sin enviar precios responde 400', asy
     conCliente(client, () => completarOrdenProduccion(55, validarCompletarOrdenProduccion({ lineas: lineasReales }))),
     (error) => error instanceof AppError && error.statusCode === 400,
   );
-  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_mediana =')), false);
+  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_partes =')), false);
 });
 
 test('completar OP de pizza con precio existente no exige ni cambia precios', async () => {
@@ -116,7 +117,7 @@ test('completar OP de pizza con precio Grande menor o igual que Mediana responde
         && /Debe ser mayor que el precio de la porción Mediana/.test(error.message),
     );
     assert.deepEqual(client.estado.producto, { precio_venta: 0, precio_grande: 0 });
-    assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_mediana =')), false);
+    assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_partes =')), false);
   }
 });
 
@@ -144,7 +145,7 @@ test('completar OP con dos pizzas nuevas y falta el precio de una responde 400',
     conCliente(client, () => completarOrdenProduccion(55, datos)),
     (error) => error instanceof AppError && error.statusCode === 400,
   );
-  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_mediana =')), false);
+  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_partes =')), false);
 });
 
 test('el validador de completar rechaza precios por producto repetidos o no positivos', () => {
@@ -161,11 +162,11 @@ test('el validador de completar rechaza precios por producto repetidos o no posi
   );
 });
 
-test('completar una orden solo de Medianas sin precio Grande (pizza nueva) funciona', async () => {
+test('completar una orden sin precio Grande responde 400', async () => {
   const client = clientePizza({ precio_venta: 0, precio_grande: 0 });
   const datos = validarCompletarOrdenProduccion({ lineas: lineasReales, precio_mediana: 1200 });
-  await conCliente(client, () => completarOrdenProduccion(55, datos));
-  assert.deepEqual(client.estado.producto, { precio_venta: 1200, precio_grande: 0 });
+  await assert.rejects(conCliente(client, () => completarOrdenProduccion(55, datos)),
+    (error) => error.statusCode === 400);
 });
 
 test('orden solo de Medianas: precio Mediana mayor o igual al Grande guardado responde 400', async () => {
@@ -177,7 +178,7 @@ test('orden solo de Medianas: precio Mediana mayor o igual al Grande guardado re
       (error) => error instanceof AppError && error.statusCode === 400,
     );
     assert.deepEqual(client.estado.producto, { precio_venta: 900, precio_grande: 1000 });
-    assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_mediana =')), false);
+    assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_partes =')), false);
   }
 });
 
@@ -190,7 +191,7 @@ test('completar una preparación con cantidad real mayor que la debida responde 
       && error.statusCode === 400
       && /No puede ser mayor que la cantidad que debías hacer \(2\)/.test(error.message),
   );
-  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_mediana =')), false);
+  assert.equal(client.estado.consultas.some((c) => c.consulta.includes('stock_partes =')), false);
 });
 
 test('editar una pizza con precio Grande menor o igual que Mediana responde 400', async () => {
@@ -222,7 +223,7 @@ function clienteEstadoProducto(datos = {}) {
   const producto = {
     id_producto: 7, tipo: 'Elaborado', estado: 'Descontinuado',
     categoria_nombre: 'Pizza', precio_venta: 900, precio_grande: 1000,
-    stock: 0, stock_mediana: 0, stock_grande: 0, ...datos,
+    stock: 0, stock_partes: 0, ...datos,
   };
   const consultas = [];
   return {
@@ -255,7 +256,7 @@ test('reactivar una pizza descontinuada exige Grande mayor que Mediana, ambos > 
 
 test('poner disponible una pizza con stock y precios válidos guarda y devuelve Disponible', async () => {
   for (const estado of ['Descontinuado', 'No disponible']) {
-    const client = clienteEstadoProducto({ estado, stock_mediana: 30, stock_grande: 16 });
+    const client = clienteEstadoProducto({ estado, stock_partes: 90 });
     const resultado = await conCliente(client, () => cambiarEstadoProducto(7, 'Automático'));
     assert.equal(resultado.estado, 'Disponible');
     assert.equal(resultado.mensaje, undefined);
@@ -288,7 +289,7 @@ test('lasañas y bebidas con stock y precio pasan a Disponible', async () => {
 
 test('una pizza no disponible admite precio de un solo tamaño si solo ese tamaño tiene stock', async () => {
   const client = clienteEstadoProducto({
-    estado: 'No disponible', stock_mediana: 6, precio_grande: 0,
+    estado: 'No disponible', stock_partes: 3, precio_grande: 0,
   });
   const resultado = await conCliente(client, () => cambiarEstadoProducto(7, 'Automático'));
   assert.equal(resultado.estado, 'Disponible');
@@ -296,9 +297,9 @@ test('una pizza no disponible admite precio de un solo tamaño si solo ese tama�
 
 test('no se pone disponible un producto con stock y precios inválidos', async () => {
   for (const producto of [
-    { estado: 'No disponible', stock_mediana: 6, precio_venta: 0 },
-    { estado: 'No disponible', stock_grande: 8, precio_grande: 0 },
-    { estado: 'No disponible', stock_mediana: 6, precio_grande: 900 },
+    { estado: 'No disponible', stock_partes: 18, precio_venta: 0 },
+    { estado: 'No disponible', stock_partes: 32, precio_grande: 0 },
+    { estado: 'No disponible', stock_partes: 18, precio_grande: 900 },
     { estado: 'No disponible', categoria_nombre: 'Lasaña', stock: 1, precio_venta: 0 },
     { estado: 'No disponible', categoria_nombre: 'Bebidas', tipo: 'Reventa', stock: 1, precio_venta: 0 },
   ]) {

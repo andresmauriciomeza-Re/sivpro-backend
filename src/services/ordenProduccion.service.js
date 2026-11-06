@@ -1,6 +1,8 @@
 import AppError from '../errors/AppError.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { fechaHoraBogota } from '../utils/produccion.js';
+import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
 
 /**
  * Registra la orden Pedido y aplica los efectos de inventario asociados a la
@@ -9,8 +11,8 @@ import { fechaHoraBogota } from '../utils/produccion.js';
  *
  * Las pizzas descuentan porciones del stock de su tamaño y lasañas descuentan
  * unidades de stock: al aceptar la venta salen del inventario (una sola vez,
- * gracias a `productos_descontados`) y la orden queda como encargo de
- * CALENTAMIENTO por la hora de recogida. Si no alcanza el stock, se rechaza
+ * gracias a `productos_descontados`) y la orden inicia el CALENTAMIENTO.
+ * Si no alcanza el stock, se rechaza
  * con 409 y el detalle de `faltantes` sin tocar nada: el rollback lo hace la
  * transacción de la venta. En ventas del panel el inventario ya fue descontado.
  */
@@ -39,7 +41,7 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
   const { rows: lineas } = await client.query(
     `SELECT dv.id_producto, dv.cantidad, dv.tamano,
             p.tipo, p.unidad_venta, p.nombre, p.stock,
-            p.stock_mediana, p.stock_grande, c.nombre AS categoria_nombre
+            p.stock_partes, c.nombre AS categoria_nombre
        FROM tb_detalle_venta dv
        JOIN tb_productos p ON p.id_producto = dv.id_producto
        JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
@@ -60,19 +62,20 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
       if (esPizza && !['Mediana', 'Grande'].includes(tamano)) {
         throw new AppError(`Selecciona Mediana o Grande para ${linea.nombre}.`, 400);
       }
-      const clave = esPizza ? `${idProducto}:${tamano}` : String(idProducto);
+      const clave = String(idProducto);
       const stock = esPizza
-        ? Number((tamano === 'Mediana' ? linea.stock_mediana : linea.stock_grande) ?? 0)
+        ? Number(linea.stock_partes ?? 0)
         : Number(linea.stock ?? 0);
       const actual = requeridos.get(clave) ?? {
         id_producto: idProducto,
         nombre: linea.nombre,
         tamano,
+        esPizza,
         unidad: esPizza ? 'porciones' : linea.unidad_venta || 'und',
         requerido: 0,
         stock,
       };
-      actual.requerido += Number(linea.cantidad);
+      actual.requerido += esPizza ? partesPizza(Number(linea.cantidad), tamano) : Number(linea.cantidad);
       requeridos.set(clave, actual);
     } else if (linea.tipo !== 'Reventa') {
       throw new AppError(`Tipo de producto no soportado en producción: ${linea.tipo}.`, 409);
@@ -81,6 +84,7 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
   const faltantes = [];
   for (const requerido of inventarioYaDescontado ? [] : requeridos.values()) {
     if (requerido.requerido > requerido.stock) {
+      if (requerido.esPizza) throw errorStockPizza(requerido.nombre, requerido.stock);
       faltantes.push({
         id_insumo: null,
         id_producto: requerido.id_producto,
@@ -100,14 +104,19 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
   }
 
   // ── 2. La orden nace marcada: sus productos ya quedaron descontados. ──
-  const historial = inventarioYaDescontado
-    ? [{ de: null, a: 'Pendiente', fechaHora: fechaHoraBogota().timestamp, origen: 'venta_panel' }]
-    : [];
+  const inicio = fechaHoraBogota().timestamp;
+  const historial = [{
+    de: null, a: 'En proceso', fechaHora: inicio,
+    ...(inventarioYaDescontado ? { origen: 'venta_panel' } : {}),
+  }];
   const { rows: ordenRows } = await client.query(
-    `INSERT INTO tb_orden_produccion (tipo, id_venta, fecha_solicitada, hora_solicitada, estado, productos_descontados, historial, venta_local)
-     VALUES ('Pedido', $1::int, $2::date, $3::time, 'Pendiente', TRUE, $4::jsonb, $5::boolean)
+    `INSERT INTO tb_orden_produccion
+       (tipo, id_venta, fecha_solicitada, hora_solicitada, estado, productos_descontados,
+        fecha_en_proceso, tiempo_preparacion_min, fecha_entrega_estimada, historial)
+     VALUES ('Pedido', $1::int, $2::date, $3::time, 'En proceso', TRUE,
+             $4::timestamp, ${MINUTOS_CALENTAMIENTO_PEDIDO}, $4::timestamp + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes', $5::jsonb)
      RETURNING id_orden_produccion`,
-    [idVenta, venta.fecha_solicitada, venta.hora_recogida, JSON.stringify(historial), inventarioYaDescontado]
+    [idVenta, venta.fecha_solicitada, venta.hora_recogida, inicio, JSON.stringify(historial)]
   );
   const idOrden = Number(ordenRows[0].id_orden_produccion);
 
@@ -115,7 +124,6 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
   for (const linea of lineas) {
     if (linea.tipo === 'Elaborado') {
       const esPizza = normalizarCategoria(linea.categoria_nombre) === 'pizza';
-      const columnaStock = linea.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
       await client.query(
         `INSERT INTO tb_detalle_orden_produccion
            (id_orden_produccion, id_producto, id_insumo, cantidad_estimada, unidad, nombre, tamano)
@@ -132,16 +140,15 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
       if (inventarioYaDescontado) continue;
       const { rows: descontado } = await client.query(
         `UPDATE tb_productos
-            SET ${esPizza ? `${columnaStock} =             ${columnaStock} - $2::int` : 'stock = stock - $2::int'}
+            SET ${esPizza ? 'stock_partes = stock_partes - $2::int' : 'stock = stock - $2::int'}
           WHERE id_producto = $1 AND tipo = 'Elaborado'
-           AND ${esPizza ? `${columnaStock} >= $2::int` : 'stock >= $2::int'}
+           AND ${esPizza ? 'stock_partes >= $2::int' : 'stock >= $2::int'}
           RETURNING stock`,
-        [linea.id_producto, linea.cantidad]
+        [linea.id_producto, esPizza ? partesPizza(Number(linea.cantidad), linea.tamano) : linea.cantidad]
       );
       if (!descontado[0]) {
-        const stock = esPizza
-          ? Number((linea.tamano === 'Mediana' ? linea.stock_mediana : linea.stock_grande) ?? 0)
-          : Number(linea.stock ?? 0);
+        if (esPizza) throw errorStockPizza(linea.nombre, linea.stock_partes);
+        const stock = Number(linea.stock ?? 0);
         const error = new AppError('No hay stock suficiente de productos elaborados (pre-hechas) para aceptar la venta.', 409);
         error.faltantes = [{
           id_insumo: null,
@@ -216,11 +223,10 @@ export async function cancelarOrdenProduccionDeVenta(client, idVenta, { devolver
         if (!['Mediana', 'Grande'].includes(producto.tamano)) {
           throw new AppError('No se puede devolver el stock de una pizza sin tamaño válido.', 409);
         }
-        const columnaStock = producto.tamano === 'Mediana' ? 'stock_mediana' : 'stock_grande';
         await client.query(
-          `UPDATE tb_productos SET ${columnaStock} =           ${columnaStock} + $1::int
+          `UPDATE tb_productos SET stock_partes = stock_partes + $1::int
             WHERE id_producto = $2 AND tipo = 'Elaborado'`,
-          [producto.cantidad, producto.id_producto]
+          [partesPizza(Number(producto.cantidad), producto.tamano), producto.id_producto]
         );
       } else {
         await client.query(

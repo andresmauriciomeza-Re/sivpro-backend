@@ -12,7 +12,7 @@ import { validarPreciosPizza } from '../src/validators/productos.validator.js';
 import { validarTamanoPizzaPreparacion } from '../src/validators/ordenesProduccion.validator.js';
 
 function pizzaVentaClient(stockGrande) {
-  const estado = { stockGrande };
+  const estado = { stockPartes: stockGrande * 4 };
   const linea = {
     id_producto: 7,
     cantidad: 3,
@@ -21,8 +21,7 @@ function pizzaVentaClient(stockGrande) {
     unidad_venta: 'und',
     nombre: 'Pizza prueba',
     stock: 0,
-    stock_mediana: 12,
-    stock_grande: stockGrande,
+    stock_partes: estado.stockPartes,
     categoria_nombre: 'Pizza',
   };
   return {
@@ -37,24 +36,25 @@ function pizzaVentaClient(stockGrande) {
       }
       if (consulta.startsWith('select dv.id_producto')) return { rows: [{ ...linea }] };
       if (consulta.startsWith('insert into tb_orden_produccion')) {
-        assert.match(consulta, /venta_local/);
-        assert.equal(params[4], false);
+        assert.doesNotMatch(consulta, /venta_local/);
+        assert.equal(params.length, 5);
+        assert.match(consulta, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
         return { rows: [{ id_orden_produccion: 88 }] };
       }
       if (consulta.startsWith('insert into tb_detalle_orden_produccion')) return { rows: [] };
-      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_grande = stock_grande - $2')) {
-        if (estado.stockGrande < params[1]) return { rows: [] };
-        estado.stockGrande -= params[1];
+      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_partes = stock_partes - $2')) {
+        if (estado.stockPartes < params[1]) return { rows: [] };
+        estado.stockPartes -= params[1];
         return { rows: [{ stock: 0 }] };
       }
       if (consulta.startsWith('select id_orden_produccion, estado, productos_descontados')) {
         return { rows: [{ id_orden_produccion: 88, estado: 'Pendiente', productos_descontados: true }] };
       }
       if (consulta.startsWith('select dv.id_producto, dv.cantidad, dv.tamano')) {
-        return { rows: [{ ...linea, stock_grande: estado.stockGrande }] };
+        return { rows: [{ ...linea, stock_partes: estado.stockPartes }] };
       }
-      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_grande = stock_grande + $1')) {
-        estado.stockGrande += params[0];
+      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_partes = stock_partes + $1')) {
+        estado.stockPartes += params[0];
         return { rows: [], rowCount: 1 };
       }
       if (consulta.startsWith('update tb_orden_produccion')) return { rows: [], rowCount: 1 };
@@ -63,8 +63,8 @@ function pizzaVentaClient(stockGrande) {
   };
 }
 
-test('completar OP de Pizza Mediana por 2 suma 12 porciones', async () => {
-  const stock = { mediana: 4 };
+test('completar OP antigua de Pizza Mediana por 2 suma 48 partes', async () => {
+  const stock = { partes: 4 };
   const linea = {
     id_detalle_op: 91,
     id_producto: 7,
@@ -91,18 +91,19 @@ test('completar OP de Pizza Mediana por 2 suma 12 porciones', async () => {
     async query(sql, params = []) {
       const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
       if (consulta === 'begin' || consulta === 'commit' || consulta === 'rollback') return { rows: [] };
+      if (consulta.startsWith('select v.id_venta from tb_venta v')) return { rows: [] };
       if (consulta.includes('from tb_orden_produccion op')) return { rows: [{ ...orden }] };
       if (consulta.includes('from tb_detalle_orden_produccion d')) return { rows: [{ ...linea }] };
       if (consulta.startsWith('select c.nombre from tb_productos p')) return { rows: [{ nombre: 'Pizza' }] };
       if (consulta.startsWith('select precio_venta, precio_grande from tb_productos')) {
         return { rows: [{ precio_venta: 900, precio_grande: 1000 }] };
       }
-      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_mediana = stock_mediana + $2::int')) {
+      if (consulta.startsWith('update tb_productos') && consulta.includes('stock_partes = stock_partes + $2::int')) {
         // Sin operar parámetros sin tipo entre sí (error 42725 de PostgreSQL).
         assert.doesNotMatch(consulta, /\$\d\s*\*\s*\$\d/);
         assert.equal(params.length, 2);
-        assert.deepEqual(params, [7, 12]);
-        stock.mediana += params[1];
+        assert.deepEqual(params, [7, 48]);
+        stock.partes += params[1];
         return { rows: [], rowCount: 1 };
       }
       if (consulta.startsWith('update tb_detalle_orden_produccion')) return { rows: [], rowCount: 1 };
@@ -122,16 +123,16 @@ test('completar OP de Pizza Mediana por 2 suma 12 porciones', async () => {
   } finally {
     pool.connect = conectarOriginal;
   }
-  assert.equal(stock.mediana, 16);
+  assert.equal(stock.partes, 52);
 });
 
 test('aceptar pedido descuenta porciones Grandes y anularlo las devuelve', async () => {
   const client = pizzaVentaClient(10);
   const idOrden = await crearOrdenProduccion(client, 31);
   assert.equal(idOrden, 88);
-  assert.equal(client.estado.stockGrande, 7);
+  assert.equal(client.estado.stockPartes, 28);
   assert.equal(await cancelarOrdenProduccionDeVenta(client, 31), 88);
-  assert.equal(client.estado.stockGrande, 10);
+  assert.equal(client.estado.stockPartes, 40);
 });
 
 test('aceptar pedido rechaza con 409 si no alcanza el stock Grande', async () => {
@@ -141,12 +142,11 @@ test('aceptar pedido rechaza con 409 si no alcanza el stock Grande', async () =>
     (error) => {
       assert.ok(error instanceof AppError);
       assert.equal(error.statusCode, 409);
-      assert.equal(error.faltantes[0].unidad, 'porciones');
-      assert.equal(error.faltantes[0].falta, 1);
+      assert.match(error.message, /Solo alcanzan 2 porciones medianas o 2 grandes/);
       return true;
     },
   );
-  assert.equal(client.estado.stockGrande, 2);
+  assert.equal(client.estado.stockPartes, 8);
 });
 
 test('la venta valida el precio por porción y el stock del tamaño elegido', () => {
@@ -159,16 +159,15 @@ test('la venta valida el precio por porción y el stock del tamaño elegido', ()
     estado: 'Disponible',
     precio_venta: 900,
     precio_grande: 850,
-    stock_mediana: 12,
-    stock_grande: 3,
+    stock_partes: 12,
     nombre: 'Pizza prueba',
   };
   const [calculada] = validarProductosDeBase([linea], [producto]);
   assert.equal(calculada.precio, 850);
   assert.equal(calculada.subtotal, 2550);
   assert.throws(
-    () => validarProductosDeBase([linea], [{ ...producto, stock_grande: 2 }]),
-    (error) => error.statusCode === 409 && error.faltantes[0].unidad === 'porciones',
+    () => validarProductosDeBase([linea], [{ ...producto, stock_partes: 8 }]),
+    (error) => error.statusCode === 409 && /Solo alcanzan/.test(error.message),
   );
 });
 
