@@ -65,13 +65,67 @@ function validarFechaCalendario(fecha) {
   }
 }
 
+/**
+ * Fase C (anulación de compra): ¿el insumo está siendo usado por una orden de
+ * producción activa?
+ *
+ * Se considera "en uso" cualquier orden **Pendiente, En proceso o Completada**;
+ * sólo la Cancelada libera al insumo (si más adelante hay que bloquear sólo
+ * "En proceso"/"Completada", basta con quitar 'Pendiente' del IN).
+ *
+ * Dos caminos, porque una línea puede depender del insumo de dos maneras:
+ *   1. la ficha técnica con la que se creó la línea (`d.id_ft`) lo incluye en
+ *      `tb_insumo_ficha_tecnica` (índice (id_ft, id_insumo) de la migración 011);
+ *   2. el snapshot de consumo de la línea (`insumos_consumidos.insumos[]`) lo
+ *      menciona: cubre líneas sin ficha y recetas modificadas DESPUÉS de crear
+ *      la orden (un insumo quitado de la receta ya no aparecería en el camino 1).
+ *
+ * Devuelve `{ id_orden_produccion, estado }` de la orden más reciente, o `null`.
+ */
+export async function buscarOrdenProduccionConInsumo(client, idInsumo) {
+  const { rows } = await client.query(
+    `SELECT o.id_orden_produccion, o.estado
+       FROM tb_orden_produccion o
+       JOIN tb_detalle_orden_produccion d
+         ON d.id_orden_produccion = o.id_orden_produccion
+      WHERE o.estado IN ('Pendiente', 'En proceso', 'Completada')
+        AND (
+          EXISTS (
+            SELECT 1
+              FROM tb_insumo_ficha_tecnica ift
+             WHERE ift.id_ft = d.id_ft
+               AND ift.id_insumo = $1
+          )
+          OR (
+            jsonb_typeof(d.insumos_consumidos) = 'object'
+            AND d.insumos_consumidos @> jsonb_build_object(
+                  'insumos',
+                  jsonb_build_array(jsonb_build_object('id_insumo', $1::int))
+                )
+          )
+        )
+      ORDER BY o.id_orden_produccion DESC
+      LIMIT 1`,
+    [idInsumo]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Mensaje exacto del 409 que recibe el frontend (`toast.error` con el 409
+ * conserva el mensaje del servidor). Se exporta para poder testearlo sin BD.
+ */
+export function mensajeInsumoEnOrdenProduccion(nombreInsumo, orden) {
+  return `No se puede anular: el insumo «${nombreInsumo}» está siendo utilizado en la orden de producción N° ${orden.id_orden_produccion} (${orden.estado}).`;
+}
+
 async function obtenerCompraEnConexion(client, idCompra) {
   const ejecutar = typeof client === 'function' ? client : client.query.bind(client);
   const { rows } = await ejecutar(
     `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
             c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
             c.motivo_anulacion, c.fecha_anulacion,
-            p.nombre AS proveedor_nombre
+            p.nombre AS proveedor_nombre, p.nit AS proveedor_nit
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
       WHERE c.id_compra = $1`,
@@ -309,7 +363,7 @@ export async function listarCompras(filtros) {
     `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
             c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
             c.motivo_anulacion, c.fecha_anulacion,
-            p.nombre AS proveedor_nombre
+            p.nombre AS proveedor_nombre, p.nit AS proveedor_nit
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
       ${condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : ''}
@@ -366,6 +420,13 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
       );
       const insumo = insumos[0];
       if (!insumo) throw new AppError(`No se puede anular: el insumo «${detalle.nombre}» no existe.`, 409);
+      // Fase C: si el insumo ya forma parte de una orden de producción activa,
+      // NO se devuelve su stock (aunque alcance). El 409 aborta la transacción
+      // completa: ni estado, ni stock, ni la anulación en cascada de la OC.
+      const ordenEnUso = await buscarOrdenProduccionConInsumo(client, detalle.id_insumo);
+      if (ordenEnUso) {
+        throw new AppError(mensajeInsumoEnOrdenProduccion(insumo.nombre, ordenEnUso), 409);
+      }
       const unidades = convertirCantidadCompra(detalle.cantidad, detalle.medida, insumo.unidad_medida, insumo.nombre);
       const { rowCount } = await client.query(
         `UPDATE tb_insumo SET         stock_actual = stock_actual - $2::numeric
