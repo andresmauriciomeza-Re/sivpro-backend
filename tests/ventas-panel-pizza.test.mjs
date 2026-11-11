@@ -7,7 +7,7 @@ import { iniciarOrdenProduccion, completarOrdenProduccion, darBajaOrdenProduccio
 import { validarCrearVenta } from '../src/validators/ventas.validator.js';
 import { validarGenerarOrdenProduccion } from '../src/validators/ordenesProduccion.validator.js';
 
-function crearBaseVenta({ stockGrande = 10, producto = {}, productosExtra = [], fallarDetalleOrden = false } = {}) {
+function crearBaseVenta({ stockGrande = 10, producto = {}, productosExtra = [], fallarDetalleOrden = false, transcurridos = 60 } = {}) {
   const estado = {
     producto: {
       id_producto: 7,
@@ -119,7 +119,7 @@ function crearBaseVenta({ stockGrande = 10, producto = {}, productosExtra = [], 
       if (consulta.startsWith('select v.id_venta, v.fecha, v.monto, v.estado')) {
         return {
           rows: estado.venta
-            ? [{ ...estado.venta, transcurridos: 60 }]
+            ? [{ ...estado.venta, transcurridos }]
             : [],
         };
       }
@@ -413,6 +413,31 @@ test('anular venta del panel conserva la OP completada o ya cancelada y devuelve
   }
 });
 
+test('el cliente puede cancelar dentro de los 10 minutos una venta local marcada lista', async () => {
+  const base = crearBaseVenta();
+  await conBaseSimulada(base, async () => {
+    await crearVentaPanel(clientePanel, { horaRecogida: null, lineas: [lineaGrande], pago: pagoLocal });
+    base.estado.orden.estado = 'Completada';
+    base.estado.venta.estado = 'Completado';
+    const resultado = await cancelarVentaCliente(31, '10001');
+    assert.equal(resultado.estado, 'Anulado');
+  });
+  assert.equal(base.estado.orden.estado, 'Completada');
+  assert.deepEqual(base.estado.movimientos, [['descuento_partes', 12], ['devolucion_partes', 12]]);
+});
+
+test('el cliente no puede cancelar una venta local lista después de los 10 minutos', async () => {
+  const base = crearBaseVenta({ transcurridos: 600 });
+  await conBaseSimulada(base, async () => {
+    await crearVentaPanel(clientePanel, { horaRecogida: null, lineas: [lineaGrande], pago: pagoLocal });
+    base.estado.orden.estado = 'Completada';
+    base.estado.venta.estado = 'Completado';
+    await assert.rejects(cancelarVentaCliente(31, '10001'), (error) => error.statusCode === 409 && /10 minutos/.test(error.message));
+  });
+  assert.equal(base.estado.venta.estado, 'Completado');
+  assert.deepEqual(base.estado.movimientos, [['descuento_partes', 12]]);
+});
+
 test('una venta completada de tienda con OP no se trata como venta del panel', async () => {
   const base = crearBaseVenta();
   base.estado.venta = { id_venta: 31, estado: 'Completado', monto: 2700 };
@@ -424,11 +449,8 @@ test('una venta completada de tienda con OP no se trata como venta del panel', a
   assert.deepEqual(base.estado.movimientos, []);
 });
 
-test('completar manualmente un pedido se rechaza; dar de baja no cambia venta', async () => {
+test('dar de baja un pedido no cambia la venta', async () => {
   for (const [accion, local, estadoInicial] of [
-    ['completar', true, 'Por entregar'],
-    ['completar', false, 'Por entregar'],
-    ['completar', true, 'Anulado'],
     ['baja', true, 'Por entregar'],
   ]) {
     const orden = {
@@ -480,24 +502,16 @@ test('completar manualmente un pedido se rechaza; dar de baja no cambia venta', 
         release() {},
       },
     };
-    if (accion === 'completar') {
-      await assert.rejects(
-        conBaseSimulada(base, () => completarOrdenProduccion(99, { lineas: null })),
-        (error) => error instanceof AppError && error.statusCode === 409 &&
-          error.message === 'Esta orden se completa sola al terminar los 25 minutos',
-      );
-    } else {
-      const resultado = await conBaseSimulada(base, () => darBajaOrdenProduccion(99, { motivo: 'Otro', descripcion: 'Prueba' }));
-      assert.deepEqual(resultado.lineas.map((linea) => linea.cantidad_real), [null, null]);
-    }
-    assert.equal(orden.estado, accion === 'completar' ? 'En proceso' : 'Cancelada');
+    const resultado = await conBaseSimulada(base, () => darBajaOrdenProduccion(99, { motivo: 'Otro', descripcion: 'Prueba' }));
+    assert.deepEqual(resultado.lineas.map((linea) => linea.cantidad_real), [null, null]);
+    assert.equal(orden.estado, 'Cancelada');
     assert.equal(venta.estado, estadoInicial);
     assert.equal(consultas.some((c) => c.startsWith('update tb_venta')), false);
     assert.equal(consultas.some((c) => c.startsWith('update tb_productos') || c.includes('tb_insumo')), false);
   }
 });
 
-test('rechazar completar un pedido revierte la transacción', async () => {
+test('completar un pedido fuera de proceso revierte la transacción', async () => {
   const consultas = [];
   const base = { client: {
     async query(sql) {
@@ -506,7 +520,7 @@ test('rechazar completar un pedido revierte la transacción', async () => {
       if (['begin', 'rollback'].includes(consulta)) return { rows: [] };
       if (consulta.startsWith('select v.id_venta from tb_venta v')) return { rows: [{ id_venta: 31 }] };
       if (consulta.includes('from tb_orden_produccion op')) return { rows: [{
-        id_orden_produccion: 99, id_venta: 31, tipo: 'Pedido', estado: 'En proceso',
+        id_orden_produccion: 99, id_venta: 31, tipo: 'Pedido', estado: 'Cancelada',
         historial: [], insumos_requeridos: [], es_venta_local: true,
       }] };
       if (consulta.includes('from tb_detalle_orden_produccion d')) return { rows: [] };

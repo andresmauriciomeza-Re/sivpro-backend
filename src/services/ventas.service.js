@@ -17,6 +17,7 @@ import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion
 import { avanzarAutomaticamente } from './avanceAutomatico.service.js';
 import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
 import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
+import { completarPedidoEnConexion } from './ordenesProduccion.service.js';
 
 /** Marca quién deja la venta en estado Anulado. El rechazo de la verificación
     lo hace siempre el panel; la anulación del panel usa 'Administrador' y la
@@ -581,7 +582,8 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
       // Mismo mensaje en "no existe" y "no es tuya": no se filtra qué ventas
       // existen para otros usuarios.
       if (!venta) throw new AppError('Venta no encontrada.', 404);
-      if (!puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.ANULADO)) {
+      if (!(venta.venta_local && venta.estado === ESTADOS_VENTA.COMPLETADO)
+          && !puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.ANULADO)) {
         throw new AppError(`Tu pedido ${idVenta} ya no se puede cancelar (${venta.estado}).`, 409);
       }
       const transcurridos = Number(venta.transcurridos ?? 0);
@@ -882,6 +884,61 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
 }
 
 export { avanzarAutomaticamente as avanzarVentasCompletadas } from './avanceAutomatico.service.js';
+
+export async function marcarVentaLista(idVenta) {
+  try {
+    const orden = await transaction(async (client) => {
+      const { rows: ventas } = await client.query(
+        `SELECT id_venta, estado, venta_local FROM tb_venta WHERE id_venta = $1::int FOR UPDATE`,
+        [idVenta],
+      );
+      const venta = ventas[0];
+      if (!venta) throw new AppError('Venta no encontrada.', 404);
+      if (venta.estado !== ESTADOS_VENTA.POR_ENTREGAR) {
+        throw new AppError('Solo se puede marcar como lista una venta por entregar.', 409);
+      }
+      const { rows: ordenes } = await client.query(
+        `SELECT id_orden_produccion, estado FROM tb_orden_produccion
+          WHERE id_venta = $1::int AND tipo = 'Pedido'
+          ORDER BY CASE WHEN estado = 'En proceso' THEN 0 ELSE 1 END, id_orden_produccion DESC
+          LIMIT 1 FOR UPDATE`,
+        [idVenta],
+      );
+      if (ordenes[0]) {
+        if (ordenes[0].estado !== 'En proceso') {
+          throw new AppError('La orden del pedido no está en proceso.', 409);
+        }
+        const resultado = await completarPedidoEnConexion(client, Number(ordenes[0].id_orden_produccion));
+        return resultado.orden;
+      }
+      if (!venta.venta_local) throw new AppError('La venta no tiene un pedido en proceso.', 409);
+      const { rows: productos } = await client.query(
+        `SELECT p.tipo, c.nombre AS categoria_nombre
+           FROM tb_detalle_venta dv
+           JOIN tb_productos p ON p.id_producto = dv.id_producto
+           JOIN tb_categoria_productos c ON c.id_categoria = p.id_categoria
+          WHERE dv.id_venta = $1::int`,
+        [idVenta],
+      );
+      if (!productos.length || productos.some((p) => p.tipo !== 'Reventa' || normalizarCategoria(p.categoria_nombre) !== 'bebidas')) {
+        throw new AppError('Solo una venta local de bebidas sin orden puede completarse directamente.', 409);
+      }
+      await client.query(
+        `UPDATE tb_venta SET estado = $2, fecha_estado = now() AT TIME ZONE $3::text
+          WHERE id_venta = $1::int`,
+        [idVenta, ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO],
+      );
+      return null;
+    });
+    await avanzarAutomaticamente({ notificarVentaId: idVenta });
+    const { rows } = await query(
+      `SELECT estado, venta_local FROM tb_venta WHERE id_venta = $1::int`,
+      [idVenta],
+    );
+    if (!rows[0]) throw new AppError('Venta no encontrada.', 404);
+    return { ...rows[0], estado_orden: orden?.estado ?? null, orden };
+  } catch (error) { throw mapearError(error); }
+}
 
 export function agruparFilasPorId(rows, campoId) {
   const agrupadas = new Map();

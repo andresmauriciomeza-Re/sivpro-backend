@@ -40,7 +40,7 @@ function validarFechaCalendario(valor) {
  * el IVA global de la petición (retrocompatibilidad) y por defecto queda
  * 'incluido'. Con 'exento' el porcentaje se fuerza a 0.
  */
-function validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, campo, indice) {
+function validarModoIvaItem(item, ivaIncluidoGlobal, campo, indice, etiqueta = 'ítem') {
   let modoIva;
   try {
     modoIva = resolverModoIva({ modo_iva: item?.modo_iva }, ivaIncluidoGlobal);
@@ -50,7 +50,14 @@ function validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, campo, indice
     }
     throw error;
   }
-  const iva = modoIva === 'exento' ? 0 : ivaIngresado;
+  const ivaVacio =
+    item?.iva === undefined ||
+    item?.iva === null ||
+    (typeof item.iva === 'string' && !item.iva.trim());
+  if (modoIva !== 'exento' && ivaVacio) {
+    throw new AppError(`El IVA del ${etiqueta} ${indice + 1} es obligatorio.`, 400);
+  }
+  const iva = modoIva === 'exento' ? 0 : numero(item.iva, `${campo}[${indice}].iva`);
   return { modo_iva: modoIva, iva };
 }
 
@@ -78,7 +85,7 @@ function validarUnidadBase(valor, campo) {
   return unidad;
 }
 
-function validarItems(valor, { ivaRequerido = true, permitirVacio = false, ivaIncluidoGlobal = undefined } = {}) {
+function validarItems(valor, { permitirVacio = false, ivaIncluidoGlobal = undefined } = {}) {
   if (!Array.isArray(valor) || (!permitirVacio && !valor.length)) {
     throw new AppError('La compra debe incluir al menos un ítem.', 400);
   }
@@ -90,19 +97,16 @@ function validarItems(valor, { ivaRequerido = true, permitirVacio = false, ivaIn
     const id_producto = tieneProducto ? enteroPositivo(item.id_producto, `items[${indice}].id_producto`) : null;
     const cantidad = numero(item.cantidad, `items[${indice}].cantidad`);
     const precio_unitario = numero(item.precio_unitario, `items[${indice}].precio_unitario`);
-    const ivaIngresado = item.iva === undefined && !ivaRequerido ? 0 : numero(item.iva, `items[${indice}].iva`);
-    if (ivaIngresado < 0 || ivaIngresado > 100) {
+    const { modo_iva, iva } = validarModoIvaItem(item, ivaIncluidoGlobal, 'items', indice);
+    if (iva < 0 || iva > 100) {
       throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
     }
-    // Regla 2.1: modo de IVA por ítem; con 'exento' el porcentaje se fuerza a 0.
-    const { modo_iva, iva } = validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, 'items', indice);
     const medida = item.medida;
     if (typeof medida !== 'string' || !UNIDADES_COMPRA.has(medida.trim())) {
       throw new AppError(`La medida del ítem ${indice + 1} no es válida.`, 400);
     }
     if (cantidad <= 0) throw new AppError(`La cantidad del ítem ${indice + 1} debe ser mayor que cero.`, 400);
     if (precio_unitario <= 0) throw new AppError(`El precio del ítem ${indice + 1} debe ser mayor que cero.`, 400);
-    if (iva < 0 || iva > 100) throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
     let precio_venta;
     if (id_producto != null) {
       precio_venta = numero(item.precio_venta, `items[${indice}].precio_venta`);
@@ -130,12 +134,16 @@ function validarItemsNoSolicitados(valor, { ivaIncluidoGlobal = undefined } = {}
 
     const cantidad = numero(item?.cantidad, `items_no_solicitados[${indice}].cantidad`);
     const precio_unitario = numero(item?.precio_unitario, `items_no_solicitados[${indice}].precio_unitario`);
-    const ivaIngresado = item?.iva === undefined ? 0 : numero(item.iva, `items_no_solicitados[${indice}].iva`);
-    if (ivaIngresado < 0 || ivaIngresado > 100) {
+    const { modo_iva, iva } = validarModoIvaItem(
+      item,
+      ivaIncluidoGlobal,
+      'items_no_solicitados',
+      indice,
+      'ítem no solicitado',
+    );
+    if (iva < 0 || iva > 100) {
       throw new AppError(`El IVA del ítem no solicitado ${indice + 1} debe estar entre 0 y 100.`, 400);
     }
-    // Regla 2.1: modo de IVA por ítem; con 'exento' el porcentaje se fuerza a 0.
-    const { modo_iva, iva } = validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, 'items_no_solicitados', indice);
     if (cantidad <= 0) throw new AppError(`La cantidad del ítem no solicitado ${indice + 1} debe ser mayor que cero.`, 400);
     if (precio_unitario <= 0) throw new AppError(`El precio del ítem no solicitado ${indice + 1} debe ser mayor que cero.`, 400);
 

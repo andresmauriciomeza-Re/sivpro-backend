@@ -95,6 +95,21 @@ Todos los errores responden con el formato:
 
 ## Endpoints
 
+### Marcar pedidos como listos
+
+`POST /ordenes-produccion/:id/completar` permite completar sin cuerpo una
+orden de pedido en proceso. `POST /ventas/:id/listo` requiere el permiso
+Ventas → Editar y completa la orden en proceso de una venta por entregar;
+una venta local sin orden puede completarse directamente si solo tiene bebidas.
+Otros estados o ventas sin una orden válida responden 409.
+La respuesta de `/ventas/:id/listo` incluye `estado`, `venta_local`,
+`estado_orden` y `orden` (esta última es `null` para ventas solo de bebidas).
+
+La orden se completa sin nuevos movimientos de inventario ni pérdidas. La
+venta local pasa a Completado; la venta de tienda conserva la regla de la hora
+de recogida. Si nadie la marca como lista, la orden sigue completándose
+automáticamente después de 25 minutos.
+
 ### Preparación de pizzas
 
 Las líneas nuevas de preparación de pizzas se crean sin `tamano`: `cantidad`

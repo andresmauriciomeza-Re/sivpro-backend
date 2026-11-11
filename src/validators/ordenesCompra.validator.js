@@ -54,8 +54,6 @@ function validarItems(valor) {
 
     const cantidad = numero(item.cantidad, `items[${indice}].cantidad`);
     const precio_unitario = numero(item.precio_unitario, `items[${indice}].precio_unitario`);
-    const ivaIngresado = item.iva === undefined ? 0 : numero(item.iva, `items[${indice}].iva`);
-    if (ivaIngresado < 0 || ivaIngresado > 100) throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
     // Regla 2.1: modo de IVA por ítem (por defecto 'incluido', como se
     // calculaba antes en la OC). Con 'exento' el porcentaje se fuerza a 0.
     let modo_iva;
@@ -64,7 +62,15 @@ function validarItems(valor) {
     } catch {
       throw new AppError(`El modo de IVA del ítem ${indice + 1} no es válido (${MODOS_IVA.join(', ')}).`, 400);
     }
-    const iva = modo_iva === 'exento' ? 0 : ivaIngresado;
+    const ivaVacio =
+      item?.iva === undefined ||
+      item?.iva === null ||
+      (typeof item.iva === 'string' && !item.iva.trim());
+    if (modo_iva !== 'exento' && ivaVacio) {
+      throw new AppError(`El IVA del ítem ${indice + 1} es obligatorio.`, 400);
+    }
+    const iva = modo_iva === 'exento' ? 0 : numero(item.iva, `items[${indice}].iva`);
+    if (iva < 0 || iva > 100) throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
     if (cantidad <= 0) throw new AppError(`La cantidad del ítem ${indice + 1} debe ser mayor que cero.`, 400);
     if (precio_unitario <= 0) throw new AppError(`El precio del ítem ${indice + 1} debe ser mayor que cero.`, 400);
     // Regla 2.2: factor de presentación opcional (si no viene, se usa el

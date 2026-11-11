@@ -458,6 +458,26 @@ const baseRecepcion = (itemsNoSolicitados) => ({
   items_no_solicitados: itemsNoSolicitados,
 });
 
+test('validator de recepción exige IVA gravado en ítems no solicitados pero admite exento', () => {
+  const extra = {
+    nombre: 'Insumo nuevo',
+    id_categoria_insumo: 2,
+    medida: 'kg',
+    cantidad: 1,
+    precio_unitario: 100,
+  };
+  for (const iva of [undefined, null, '']) {
+    assert.throws(
+      () => validarRecepcionCompra(baseRecepcion([{ ...extra, iva }])),
+      (error) => error.statusCode === 400 && /IVA del ítem no solicitado 1 es obligatorio/.test(error.message),
+    );
+  }
+  const exento = validarRecepcionCompra(
+    baseRecepcion([{ ...extra, modo_iva: 'exento' }]),
+  );
+  assert.equal(exento.items_no_solicitados[0].iva, 0);
+});
+
 test('validator: acepta insumo nuevo en presentación con unidad_base y factor_presentacion', () => {
   const resultado = validarRecepcionCompra(
     baseRecepcion([

@@ -8,6 +8,7 @@ import {
   crearVentaPanelController,
   listarMisVentasController,
   listarVentasController,
+  marcarVentaListaController,
   marcarDevolucionController,
   obtenerMiVentaController,
   obtenerVentaController,
@@ -31,6 +32,7 @@ router.post('/ventas/panel', verificarToken, permisoVentas('Crear'), crearVentaP
 router.get('/ventas', verificarToken, permisoVentas('Ver'), listarVentasController);
 router.get('/ventas/:id', verificarToken, permisoVentas('Ver'), obtenerVentaController);
 router.patch('/ventas/:id/verificacion', verificarToken, permisoVentas('Editar'), verificarVentaController);
+router.post('/ventas/:id/listo', verificarToken, permisoVentas('Editar'), marcarVentaListaController);
 // Cancelación del CLIENTE desde "Mis pedidos": sólo verificarToken (el
 // servicio valida que la venta sea del token y que esté en los 10 minutos).
 router.patch('/ventas/:id/cancelar', verificarToken, cancelarVentaClienteController);
