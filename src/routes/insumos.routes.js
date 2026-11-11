@@ -6,8 +6,10 @@ import {
   cambiarEstadoInsumoController,
   crearInsumoController,
   eliminarInsumoController,
+  guardarPresentacionController,
   listarCategoriasInsumoController,
   listarInsumosController,
+  listarPresentacionesController,
   obtenerInsumoController,
   actualizarInsumoController,
 } from '../controllers/insumos.controller.js';
@@ -32,6 +34,33 @@ router.get(
 );
 router.get('/insumos', verificarToken, requiereAlgunPermiso(PERMISOS_LECTURA_INSUMOS), listarInsumosController);
 router.get('/insumos/:id', verificarToken, requiereAlgunPermiso(PERMISOS_LECTURA_INSUMOS), obtenerInsumoController);
+// Presentaciones de compra del insumo (regla 2.2): permisos del módulo
+// Compras para que el formulario de Compra/OC pueda configurar el factor
+// sin depender de los permisos de pantalla de Insumos.
+router.get(
+  '/insumos/:id/presentaciones',
+  verificarToken,
+  requiereAlgunPermiso([
+    { modulo: 'Compras', nombre: 'Insumos', privilegio: 'Ver' },
+    { modulo: 'Compras', nombre: 'Compra', privilegio: 'Crear' },
+    { modulo: 'Compras', nombre: 'Orden de Compra', privilegio: 'Ver' },
+    { modulo: 'Compras', nombre: 'Orden de Compra', privilegio: 'Crear' },
+  ]),
+  listarPresentacionesController
+);
+router.post(
+  '/insumos/:id/presentaciones',
+  verificarToken,
+  requiereAlgunPermiso(
+    [
+      { modulo: 'Compras', nombre: 'Insumos', privilegio: 'Editar' },
+      { modulo: 'Compras', nombre: 'Compra', privilegio: 'Crear' },
+      { modulo: 'Compras', nombre: 'Orden de Compra', privilegio: 'Crear' },
+    ],
+    'No tienes permiso para editar las presentaciones de insumos.'
+  ),
+  guardarPresentacionController
+);
 router.post(
   '/insumos',
   verificarToken,

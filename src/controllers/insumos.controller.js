@@ -7,11 +7,13 @@ import {
   listarInsumos,
   obtenerInsumo,
 } from '../services/insumos.service.js';
+import { guardarPresentacion, listarPresentaciones } from '../services/presentaciones.service.js';
 import {
   validarCrearInsumo,
   validarEditarInsumo,
   validarEstadoInsumo,
   validarFiltrosInsumos,
+  validarGuardarPresentacion,
   validarIdInsumo,
 } from '../validators/insumos.validator.js';
 
@@ -71,6 +73,22 @@ export async function cambiarEstadoInsumoController(req, res, next) {
 export async function eliminarInsumoController(req, res, next) {
   try {
     res.json(await eliminarInsumo(validarIdInsumo(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listarPresentacionesController(req, res, next) {
+  try {
+    res.json(await listarPresentaciones(validarIdInsumo(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function guardarPresentacionController(req, res, next) {
+  try {
+    res.json(await guardarPresentacion(validarIdInsumo(req.params.id), validarGuardarPresentacion(req.body)));
   } catch (error) {
     next(error);
   }

@@ -1,6 +1,26 @@
 import AppError from '../errors/AppError.js';
 
-export const UNIDADES_INSUMO = ['kg', 'g', 'lt', 'ml', 'und', 'paq', 'caja', 'bolsa'];
+/**
+ * Unidad base de un insumo: solo medidas directas (regla 2.2, Caso A).
+ * Las presentaciones (paq, paca, caja, bolsa, sixpack) NO son unidades base:
+ * son presentaciones de compra que se convierten con un factor.
+ */
+export const UNIDADES_BASE_INSUMO = ['kg', 'g', 'lt', 'ml', 'und'];
+
+/**
+ * Presentaciones que históricamente se aceptaron como `unidad_medida` de un
+ * insumo (paq, caja, bolsa). NO se eliminan para no romper insumos ya
+ * existentes: si un insumo tiene una de estas como unidad base, se trata como
+ * unidad base con factor de presentación 1 (ver `convertirABase` en
+ * utils/compras.js). `paca` y `sixpack` nunca fueron unidades base.
+ */
+export const UNIDADES_BASE_LEGADAS = ['paq', 'caja', 'bolsa'];
+
+/**
+ * Catálogo completo que acepta `unidad_medida` al crear/editar un insumo
+ * (incluye las unidades legadas para no romper registros existentes).
+ */
+export const UNIDADES_INSUMO = [...UNIDADES_BASE_INSUMO, ...UNIDADES_BASE_LEGADAS];
 
 export function normalizarNombreInsumo(valor) {
   const limpio = typeof valor === 'string' ? valor.trim().replace(/\s+/g, ' ') : '';

@@ -118,6 +118,62 @@ requiere las migraciones anteriores y debe ejecutarse una sola vez antes de
 desplegar el backend actualizado. Los clientes deben adaptarse al nuevo
 contrato antes de utilizarlo.
 
+### Compras: IVA por ítem y presentaciones
+
+Cada línea de compra y de orden de compra indica su propio modo de IVA con el
+campo `modo_iva`: `incluido` (el monto unitario ya trae el IVA), `mas_iva` (el
+monto unitario es la base y el IVA se suma aparte) o `exento` (tarifa 0 %; el
+porcentaje se fuerza a 0). Si una línea no envía `modo_iva`, se usa el
+`iva_incluido` global de la petición (retrocompatibilidad) y, en su defecto,
+`incluido`. `tb_compras.iva_incluido` quedó como dato derivado: `true` si todas
+las líneas son `incluido`, `false` si todas son `mas_iva` y `NULL` si la factura
+mezcla modos. Los totales siempre cumplen `subtotal_sin_iva + total_iva = total`.
+
+Las líneas pueden pedir una presentación de compra (`paq`, `paca`, `caja`,
+`bolsa`, `sixpack`) en vez de la unidad base del insumo. El factor (cuántas
+unidades base trae cada presentación) se configura una vez por insumo con los
+endpoints de presentaciones, o puede enviarse en la propia línea con
+`factor_presentacion`. El inventario siempre se mueve en la unidad base del
+insumo: cada línea guarda `unidades_base` y `unidad_base`, de modo que al
+anular una compra se devuelve exactamente lo que entró y la recepción de una
+orden compara lo pedido con lo recibido en unidades base (20 kg cumplen
+1 paca). Un insumo nuevo recibido como presentación exige `unidad_base` y
+`factor_presentacion` en la línea.
+
+#### `GET /api/insumos/:id/presentaciones`
+
+Lista las presentaciones configuradas del insumo. Permiso: Compras (Insumos
+Ver, Compra Crear u Orden de Compra Ver/Crear).
+
+**Respuesta:**
+
+```json
+[
+  { "id_presentacion": 1, "id_insumo": 12, "presentacion": "paca", "unidades_base": 20, "estado": true }
+]
+```
+
+#### `POST /api/insumos/:id/presentaciones`
+
+Crea o actualiza una presentación (upsert por insumo + presentación). Permiso:
+Compras (Insumos Editar, Compra Crear u Orden de Compra Crear).
+
+```json
+{ "presentacion": "paca", "unidades_base": 20, "estado": true }
+```
+
+| Campo | Tipo | Descripción |
+| --- | --- | --- |
+| `presentacion` | string | Obligatorio. `paq`, `paca`, `caja`, `bolsa` o `sixpack` |
+| `unidades_base` | number | Obligatorio. Cuántas unidades base trae cada presentación; mayor que cero |
+| `estado` | boolean | Opcional. Por defecto `true`; `false` desactiva la presentación sin borrarla |
+
+La migración [018_iva_por_item_y_presentaciones.up.sql](migrations/018_iva_por_item_y_presentaciones.up.sql)
+agrega `modo_iva`, `unidades_base` y `unidad_base` a las líneas de compra y de
+orden de compra, relaja `tb_compras.iva_incluido` y crea la tabla
+`tb_insumo_presentacion`. Debe ejecutarse una sola vez antes de desplegar el
+backend actualizado.
+
 ### Salud
 
 | Método | Ruta | Auth | Descripción |

@@ -2,8 +2,20 @@ import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
 import { registrarEntradaCompraEnTransaccion, revertirCompraEnTransaccion } from './productos.service.js';
 import { recalcularRecepcionEnTransaccion } from './recepcionOrden.service.js';
-import { convertirCantidadCompra, calcularImporteLinea } from '../utils/compras.js';
-import { compararNombreInsumo, normalizarNombreInsumo, redondearDosDecimales } from '../utils/insumos.js';
+import { convertirItemABase } from './presentaciones.service.js';
+import {
+  calcularImporteLinea,
+  convertirCantidadCompra,
+  derivarIvaIncluidoGlobal,
+  resolverModoIva,
+} from '../utils/compras.js';
+import {
+  compararNombreInsumo,
+  normalizarNombreInsumo,
+  redondearDosDecimales,
+  UNIDADES_BASE_INSUMO,
+  UNIDADES_BASE_LEGADAS,
+} from '../utils/insumos.js';
 
 function mapearError(error) {
   if (error instanceof AppError) return error;
@@ -37,9 +49,15 @@ function mapearDetalleCompra(detalle) {
     cantidad: Number(detalle.cantidad),
     precio_unitario: Number(detalle.precio_unitario),
     iva: Number(detalle.iva),
+    // Regla 2.1: modo de IVA de la línea (las líneas antiguas quedan 'incluido').
+    modo_iva: detalle.modo_iva ?? 'incluido',
     base_sin_iva: Number(detalle.base_sin_iva),
     monto_iva: Number(detalle.monto_iva),
     subtotal: Number(detalle.subtotal),
+    // Regla 2.2: cantidad en la unidad base del insumo (NULL en productos y
+    // en líneas antiguas cuya conversión no era conocible).
+    unidades_base: detalle.unidades_base == null ? null : Number(detalle.unidades_base),
+    unidad_base: detalle.unidad_base ?? null,
   };
 }
 
@@ -134,8 +152,8 @@ async function obtenerCompraEnConexion(client, idCompra) {
   if (!rows[0]) throw new AppError('Compra no encontrada.', 404);
   const { rows: detalles } = await ejecutar(
     `SELECT id_dcompra, id_compra, id_insumo, id_producto, cantidad, medida,
-            precio_unitario, iva, base_sin_iva, monto_iva, subtotal,
-            es_no_solicitado, nombre
+            precio_unitario, iva, modo_iva, base_sin_iva, monto_iva, subtotal,
+            es_no_solicitado, nombre, unidades_base, unidad_base
        FROM tb_detallecompra
       WHERE id_compra = $1
       ORDER BY id_dcompra`,
@@ -196,7 +214,35 @@ async function crearInsumoNoSolicitadoEnTransaccion(client, item, importe) {
   if (!Number.isFinite(stockMinimo) || stockMinimo < 0) {
     throw new AppError('El stock_minimo del nuevo insumo no puede ser negativo.', 400);
   }
-  const costoUnitario = redondearDosDecimales(importe.subtotal / unidades);
+
+  // Regla 2.2: el ítem puede venir en presentación de compra (paca, sixpack,
+  // ...). Como el insumo no existe todavía, la petición debe indicar la
+  // unidad base y el factor; el insumo se crea con la unidad base y el stock
+  // queda convertido a unidades base. Sin factor, las presentaciones legadas
+  // (paq, caja, bolsa) conservan el comportamiento histórico.
+  const medida = String(item.medida).trim();
+  const esUnidadBase = UNIDADES_BASE_INSUMO.includes(medida);
+  const esUnidadLegada = UNIDADES_BASE_LEGADAS.includes(medida);
+  const factorIndicado = item.factor_presentacion != null && item.factor_presentacion !== '';
+  let unidadMedida = medida;
+  let unidadesBase = unidades;
+  let presentacion = null;
+  let factor = null;
+
+  if (!esUnidadBase && (!esUnidadLegada || factorIndicado)) {
+    unidadMedida = String(item.unidad_base ?? '').trim();
+    factor = Number(item.factor_presentacion);
+    if (!UNIDADES_BASE_INSUMO.includes(unidadMedida) || !Number.isFinite(factor) || factor <= 0) {
+      throw new AppError(
+        `El insumo nuevo «${nombre}» se recibió en presentación «${medida}»: indica la unidad base (${UNIDADES_BASE_INSUMO.join(', ')}) y cuántas unidades base trae cada ${medida} (campos unidad_base y factor_presentacion).`,
+        400
+      );
+    }
+    presentacion = medida;
+    unidadesBase = unidades * factor;
+  }
+
+  const costoUnitario = redondearDosDecimales(importe.subtotal / unidadesBase);
 
   const { rows } = await client.query(
     `INSERT INTO tb_insumo
@@ -208,16 +254,31 @@ async function crearInsumoNoSolicitadoEnTransaccion(client, item, importe) {
     [
       item.id_categoria_insumo,
       nombre,
-      item.medida,
-      unidades,
+      unidadMedida,
+      unidadesBase,
       stockMinimo,
       costoUnitario,
       item.iva,
     ]
   );
+  const idInsumo = Number(rows[0].id_insumo);
+
+  if (presentacion) {
+    await client.query(
+      `INSERT INTO tb_insumo_presentacion (id_insumo, presentacion, unidades_base, estado)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (id_insumo, presentacion)
+       DO UPDATE SET unidades_base = EXCLUDED.unidades_base,
+                     estado = TRUE`,
+      [idInsumo, presentacion, factor]
+    );
+  }
+
   return {
-    id_insumo: Number(rows[0].id_insumo),
+    id_insumo: idInsumo,
     nombre: rows[0].nombre,
+    unidades_base: unidadesBase,
+    unidad_base: unidadMedida,
   };
 }
 
@@ -232,16 +293,24 @@ async function aplicarStockInsumo(client, item, importe, iva) {
   const insumo = rows[0];
   if (!insumo) throw new AppError('Insumo no encontrado.', 404);
   if (!insumo.estado) throw new AppError(`El insumo «${insumo.nombre}» está inactivo.`, 409);
-  const unidades = convertirCantidadCompra(item.cantidad, item.medida, insumo.unidad_medida, insumo.nombre);
-  if (unidades <= 0) throw new AppError('La cantidad convertida del insumo no es válida.', 400);
-  const costoUnitario = redondearDosDecimales(importe.subtotal / unidades);
+  // Regla 2.2: la cantidad entra al inventario en la unidad base del insumo
+  // (medida directa o presentación con su factor configurado).
+  const { unidadesBase, unidadBase } = await convertirItemABase(client, item, insumo);
+  if (unidadesBase <= 0) throw new AppError('La cantidad convertida del insumo no es válida.', 400);
+  const costoUnitario = redondearDosDecimales(importe.subtotal / unidadesBase);
   await client.query(
     `UPDATE tb_insumo
         SET stock_actual = stock_actual + $2::numeric, costo_unitario = $3, iva = $4
       WHERE id_insumo = $1`,
-    [item.id_insumo, unidades, costoUnitario, iva]
+    [item.id_insumo, unidadesBase, costoUnitario, iva]
   );
-  return { nombre: insumo.nombre, cantidad: item.cantidad, medida: item.medida };
+  return {
+    nombre: insumo.nombre,
+    cantidad: item.cantidad,
+    medida: item.medida,
+    unidades_base: unidadesBase,
+    unidad_base: unidadBase,
+  };
 }
 
 async function aplicarStockProducto(client, item, importe, iva) {
@@ -300,7 +369,13 @@ export async function crearCompraEnTransaccion(client, datos, {
   ];
   if (!items.length) throw new AppError('La compra debe incluir al menos un ítem.', 400);
 
-  const importes = items.map((item) => calcularImporteLinea(item.cantidad, item.precio_unitario, item.iva, datos.iva_incluido));
+  // Regla 2.1: cada línea se calcula con su propio modo de IVA; el IVA
+  // global de la petición solo actúa como fallback de las líneas antiguas
+  // que no traen modo.
+  const importes = items.map((item) =>
+    calcularImporteLinea(item.cantidad, item.precio_unitario, item.iva, resolverModoIva(item, datos.iva_incluido))
+  );
+  const ivaIncluidoGlobal = derivarIvaIncluidoGlobal(items, datos.iva_incluido);
   const subtotalSinIva = redondearDosDecimales(importes.reduce((suma, importe) => suma + importe.base_sin_iva, 0));
   const totalIva = redondearDosDecimales(importes.reduce((suma, importe) => suma + importe.monto_iva, 0));
   const total = redondearDosDecimales(importes.reduce((suma, importe) => suma + importe.subtotal, 0));
@@ -310,22 +385,29 @@ export async function crearCompraEnTransaccion(client, datos, {
         subtotal_sin_iva, total_iva, total, estado)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Recibido')
      RETURNING id_compra`,
-    [id_ocompra, id_proveedor, datos.n_factura.trim(), datos.fecha, datos.iva_incluido, subtotalSinIva, totalIva, total]
+    [id_ocompra, id_proveedor, datos.n_factura.trim(), datos.fecha, ivaIncluidoGlobal, subtotalSinIva, totalIva, total]
   );
   const idCompra = Number(compras[0].id_compra);
 
   for (let indice = 0; indice < items.length; indice += 1) {
     const item = items[indice];
     const importe = importes[indice];
+    const modoIva = resolverModoIva(item, datos.iva_incluido);
     let idInsumoDetalle = item.id_insumo;
     let nombre;
+    let unidadesBase = null;
+    let unidadBase = null;
     if (item.es_no_solicitado && item.id_insumo == null && item.id_producto == null) {
       const creado = await crearInsumoNoSolicitadoEnTransaccion(client, item, importe);
       idInsumoDetalle = creado.id_insumo;
       nombre = creado.nombre;
+      unidadesBase = creado.unidades_base;
+      unidadBase = creado.unidad_base;
     } else if (item.id_insumo != null) {
       const aplicado = await aplicarStockInsumo(client, item, importe, item.iva);
       nombre = aplicado.nombre;
+      unidadesBase = aplicado.unidades_base;
+      unidadBase = aplicado.unidad_base;
     } else {
       const aplicado = await aplicarStockProducto(client, item, importe, item.iva);
       nombre = aplicado.nombre;
@@ -333,10 +415,12 @@ export async function crearCompraEnTransaccion(client, datos, {
     await client.query(
       `INSERT INTO tb_detallecompra
          (id_compra, id_insumo, id_producto, cantidad, medida, precio_unitario,
-          iva, base_sin_iva, monto_iva, subtotal, es_no_solicitado, nombre)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          iva, modo_iva, base_sin_iva, monto_iva, subtotal, es_no_solicitado,
+          nombre, unidades_base, unidad_base)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [idCompra, idInsumoDetalle, item.id_producto, item.cantidad, item.medida, item.precio_unitario,
-        item.iva, importe.base_sin_iva, importe.monto_iva, importe.subtotal, item.es_no_solicitado, nombre]
+        item.iva, modoIva, importe.base_sin_iva, importe.monto_iva, importe.subtotal, item.es_no_solicitado,
+        nombre, unidadesBase, unidadBase]
     );
   }
   return obtenerCompraEnConexion(client, idCompra);
@@ -374,8 +458,8 @@ export async function listarCompras(filtros) {
   const idsCompras = rows.map((row) => Number(row.id_compra));
   const { rows: detalles } = await query(
     `SELECT id_dcompra, id_compra, id_insumo, id_producto, cantidad, medida,
-            precio_unitario, iva, base_sin_iva, monto_iva, subtotal,
-            es_no_solicitado, nombre
+            precio_unitario, iva, modo_iva, base_sin_iva, monto_iva, subtotal,
+            es_no_solicitado, nombre, unidades_base, unidad_base
        FROM tb_detallecompra
       WHERE id_compra = ANY($1::integer[])
       ORDER BY id_compra, id_dcompra`,
@@ -403,7 +487,7 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
   if (!compra) throw new AppError('Compra no encontrada.', 404);
   if (compra.estado !== 'Recibido') throw new AppError('Solo se pueden anular compras en estado Recibido.', 409);
   const { rows: detalles } = await client.query(
-    `SELECT id_insumo, id_producto, cantidad, medida, nombre
+    `SELECT id_insumo, id_producto, cantidad, medida, nombre, unidades_base
        FROM tb_detallecompra
       WHERE id_compra = $1
       ORDER BY id_dcompra
@@ -427,7 +511,12 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
       if (ordenEnUso) {
         throw new AppError(mensajeInsumoEnOrdenProduccion(insumo.nombre, ordenEnUso), 409);
       }
-      const unidades = convertirCantidadCompra(detalle.cantidad, detalle.medida, insumo.unidad_medida, insumo.nombre);
+      // Regla 2.2: se devuelve exactamente lo que entró (unidades_base
+      // guardadas al recibir, en la unidad base del insumo). En líneas
+      // antiguas sin ese dato se conserva la conversión histórica.
+      const unidades = detalle.unidades_base != null
+        ? Number(detalle.unidades_base)
+        : convertirCantidadCompra(detalle.cantidad, detalle.medida, insumo.unidad_medida, insumo.nombre);
       const { rowCount } = await client.query(
         `UPDATE tb_insumo SET         stock_actual = stock_actual - $2::numeric
                   WHERE id_insumo = $1 AND stock_actual >= $2::numeric`,
