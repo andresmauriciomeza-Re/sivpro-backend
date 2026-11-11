@@ -1,6 +1,6 @@
 import AppError from '../errors/AppError.js';
-import { UNIDADES_COMPRA } from '../utils/compras.js';
-import { normalizarNombreInsumo, UNIDADES_INSUMO } from '../utils/insumos.js';
+import { derivarIvaIncluidoGlobal, MODOS_IVA, UNIDADES_COMPRA, resolverModoIva } from '../utils/compras.js';
+import { normalizarNombreInsumo, UNIDADES_BASE_INSUMO, UNIDADES_INSUMO } from '../utils/insumos.js';
 
 function numero(valor, campo) {
   if (valor === undefined || valor === null || typeof valor === 'boolean' || (typeof valor === 'string' && !valor.trim())) {
@@ -35,7 +35,50 @@ function validarFechaCalendario(valor) {
   return limpia;
 }
 
-function validarItems(valor, { ivaRequerido = true, permitirVacio = false } = {}) {
+/**
+ * Valida el `modo_iva` de un ítem (regla 2.1). Si no viene, se resuelve con
+ * el IVA global de la petición (retrocompatibilidad) y por defecto queda
+ * 'incluido'. Con 'exento' el porcentaje se fuerza a 0.
+ */
+function validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, campo, indice) {
+  let modoIva;
+  try {
+    modoIva = resolverModoIva({ modo_iva: item?.modo_iva }, ivaIncluidoGlobal);
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw new AppError(`El campo ${campo}[${indice}].modo_iva no es válido (${MODOS_IVA.join(', ')}).`, 400);
+    }
+    throw error;
+  }
+  const iva = modoIva === 'exento' ? 0 : ivaIngresado;
+  return { modo_iva: modoIva, iva };
+}
+
+/**
+ * Regla 2.2: factor de presentación opcional (cuántas unidades base trae
+ * cada presentación). Si no viene, se usa el configurado en el insumo.
+ */
+function validarFactorPresentacion(valor, campo) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  const factor = numero(valor, campo);
+  if (factor <= 0) throw new AppError(`El campo ${campo} debe ser un número mayor que cero.`, 400);
+  return factor;
+}
+
+/**
+ * Regla 2.2: unidad base opcional de un insumo nuevo recibido en
+ * presentación (solo para ítems sin id_insumo).
+ */
+function validarUnidadBase(valor, campo) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  const unidad = String(valor).trim();
+  if (!UNIDADES_BASE_INSUMO.includes(unidad)) {
+    throw new AppError(`El campo ${campo} debe ser una unidad base válida (${UNIDADES_BASE_INSUMO.join(', ')}).`, 400);
+  }
+  return unidad;
+}
+
+function validarItems(valor, { ivaRequerido = true, permitirVacio = false, ivaIncluidoGlobal = undefined } = {}) {
   if (!Array.isArray(valor) || (!permitirVacio && !valor.length)) {
     throw new AppError('La compra debe incluir al menos un ítem.', 400);
   }
@@ -47,7 +90,12 @@ function validarItems(valor, { ivaRequerido = true, permitirVacio = false } = {}
     const id_producto = tieneProducto ? enteroPositivo(item.id_producto, `items[${indice}].id_producto`) : null;
     const cantidad = numero(item.cantidad, `items[${indice}].cantidad`);
     const precio_unitario = numero(item.precio_unitario, `items[${indice}].precio_unitario`);
-    const iva = item.iva === undefined && !ivaRequerido ? 0 : numero(item.iva, `items[${indice}].iva`);
+    const ivaIngresado = item.iva === undefined && !ivaRequerido ? 0 : numero(item.iva, `items[${indice}].iva`);
+    if (ivaIngresado < 0 || ivaIngresado > 100) {
+      throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
+    }
+    // Regla 2.1: modo de IVA por ítem; con 'exento' el porcentaje se fuerza a 0.
+    const { modo_iva, iva } = validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, 'items', indice);
     const medida = item.medida;
     if (typeof medida !== 'string' || !UNIDADES_COMPRA.has(medida.trim())) {
       throw new AppError(`La medida del ítem ${indice + 1} no es válida.`, 400);
@@ -62,11 +110,14 @@ function validarItems(valor, { ivaRequerido = true, permitirVacio = false } = {}
     } else if (item.precio_venta !== undefined) {
       precio_venta = numero(item.precio_venta, `items[${indice}].precio_venta`);
     }
-    return { id_insumo, id_producto, cantidad, medida: medida.trim(), precio_unitario, iva, precio_venta };
+    // Regla 2.2: factor de presentación opcional (si no viene, se usa el
+    // configurado en el insumo).
+    const factor_presentacion = validarFactorPresentacion(item.factor_presentacion, `items[${indice}].factor_presentacion`);
+    return { id_insumo, id_producto, cantidad, medida: medida.trim(), precio_unitario, iva, modo_iva, precio_venta, factor_presentacion };
   });
 }
 
-function validarItemsNoSolicitados(valor) {
+function validarItemsNoSolicitados(valor, { ivaIncluidoGlobal = undefined } = {}) {
   if (!Array.isArray(valor)) {
     throw new AppError('El campo items_no_solicitados debe ser un arreglo.', 400);
   }
@@ -79,10 +130,14 @@ function validarItemsNoSolicitados(valor) {
 
     const cantidad = numero(item?.cantidad, `items_no_solicitados[${indice}].cantidad`);
     const precio_unitario = numero(item?.precio_unitario, `items_no_solicitados[${indice}].precio_unitario`);
-    const iva = item?.iva === undefined ? 0 : numero(item.iva, `items_no_solicitados[${indice}].iva`);
+    const ivaIngresado = item?.iva === undefined ? 0 : numero(item.iva, `items_no_solicitados[${indice}].iva`);
+    if (ivaIngresado < 0 || ivaIngresado > 100) {
+      throw new AppError(`El IVA del ítem no solicitado ${indice + 1} debe estar entre 0 y 100.`, 400);
+    }
+    // Regla 2.1: modo de IVA por ítem; con 'exento' el porcentaje se fuerza a 0.
+    const { modo_iva, iva } = validarModoIvaItem(item, ivaIngresado, ivaIncluidoGlobal, 'items_no_solicitados', indice);
     if (cantidad <= 0) throw new AppError(`La cantidad del ítem no solicitado ${indice + 1} debe ser mayor que cero.`, 400);
     if (precio_unitario <= 0) throw new AppError(`El precio del ítem no solicitado ${indice + 1} debe ser mayor que cero.`, 400);
-    if (iva < 0 || iva > 100) throw new AppError(`El IVA del ítem no solicitado ${indice + 1} debe estar entre 0 y 100.`, 400);
 
     if (tieneInsumo || tieneProducto) {
       const id_insumo = tieneInsumo ? enteroPositivo(item.id_insumo, `items_no_solicitados[${indice}].id_insumo`) : null;
@@ -98,7 +153,11 @@ function validarItemsNoSolicitados(valor) {
       } else if (item.precio_venta !== undefined) {
         precio_venta = numero(item.precio_venta, `items_no_solicitados[${indice}].precio_venta`);
       }
-      return { id_insumo, id_producto, cantidad, medida: medida.trim(), precio_unitario, iva, precio_venta };
+      const factor_presentacion = validarFactorPresentacion(
+        item.factor_presentacion,
+        `items_no_solicitados[${indice}].factor_presentacion`
+      );
+      return { id_insumo, id_producto, cantidad, medida: medida.trim(), precio_unitario, iva, modo_iva, precio_venta, factor_presentacion };
     }
 
     // Regla 9: Insumo no solicitado inexistente (se crea dentro de la transacción de recepción).
@@ -111,9 +170,30 @@ function validarItemsNoSolicitados(valor) {
     }
     const id_categoria_insumo = enteroPositivo(item.id_categoria_insumo, `items_no_solicitados[${indice}].id_categoria_insumo`);
     const medida = item?.medida;
-    if (typeof medida !== 'string' || !UNIDADES_INSUMO.includes(medida.trim())) {
+    // Regla 2.2: se acepta el catálogo completo de compras; las
+    // presentaciones que nunca fueron unidad base (paca, sixpack) exigen
+    // unidad_base y factor_presentacion porque el insumo aún no existe.
+    if (typeof medida !== 'string' || !UNIDADES_COMPRA.has(medida.trim())) {
       throw new AppError(
-        `La medida del insumo no solicitado ${indice + 1} debe ser una unidad válida (${UNIDADES_INSUMO.join(', ')}).`,
+        `La medida del insumo no solicitado ${indice + 1} debe ser una unidad válida (${[...UNIDADES_COMPRA].join(', ')}).`,
+        400
+      );
+    }
+    const factor_presentacion = validarFactorPresentacion(
+      item?.factor_presentacion,
+      `items_no_solicitados[${indice}].factor_presentacion`
+    );
+    const unidad_base = validarUnidadBase(item?.unidad_base, `items_no_solicitados[${indice}].unidad_base`);
+    const medidaLimpia = medida.trim();
+    if (factor_presentacion != null && !unidad_base) {
+      throw new AppError(
+        `El insumo no solicitado ${indice + 1}: si indicas factor_presentacion debes indicar también unidad_base.`,
+        400
+      );
+    }
+    if (!UNIDADES_INSUMO.includes(medidaLimpia) && (!unidad_base || factor_presentacion == null)) {
+      throw new AppError(
+        `El insumo no solicitado ${indice + 1} se recibió en presentación «${medidaLimpia}»: indica unidad_base (${UNIDADES_BASE_INSUMO.join(', ')}) y factor_presentacion (cuántas unidades base trae cada ${medidaLimpia}).`,
         400
       );
     }
@@ -129,11 +209,14 @@ function validarItemsNoSolicitados(valor) {
       nuevo_insumo: true,
       nombre,
       id_categoria_insumo,
-      medida: medida.trim(),
+      medida: medidaLimpia,
       cantidad,
       precio_unitario,
       iva,
+      modo_iva,
       stock_minimo,
+      unidad_base,
+      factor_presentacion,
     };
   });
 }
@@ -142,28 +225,43 @@ export function validarIdCompra(valor) {
   return enteroPositivo(valor, 'id_compra');
 }
 
+/**
+ * El IVA global dejó de ser obligatorio (regla 2.1): solo se acepta para
+ * retrocompatibilidad con peticiones antiguas. Devuelve `undefined` si no
+ * viene.
+ */
+function validarIvaIncluidoGlobal(valor) {
+  if (valor === undefined || valor === null || valor === '') return undefined;
+  if (typeof valor !== 'boolean') throw new AppError('El campo iva_incluido debe ser booleano.', 400);
+  return valor;
+}
+
 export function validarCrearCompra(body) {
   const entrada = body || {};
-  if (typeof entrada.iva_incluido !== 'boolean') throw new AppError('El campo iva_incluido debe ser booleano.', 400);
+  const ivaIncluidoGlobal = validarIvaIncluidoGlobal(entrada.iva_incluido);
+  const items = validarItems(entrada.items, { ivaIncluidoGlobal });
   return {
     n_factura: validarNumeroFactura(entrada.n_factura),
     fecha: validarFechaCalendario(entrada.fecha),
     id_proveedor: entrada.id_proveedor == null || entrada.id_proveedor === '' ? null : enteroPositivo(entrada.id_proveedor, 'id_proveedor'),
-    iva_incluido: entrada.iva_incluido,
-    items: validarItems(entrada.items),
+    // Dato derivado (regla 2.1): true si todas las líneas son 'incluido',
+    // false si todas son 'mas_iva' y NULL si hay mezcla o exentos. El global
+    // antiguo solo entra como fallback de las líneas que no traen modo.
+    iva_incluido: derivarIvaIncluidoGlobal(items, ivaIncluidoGlobal),
+    items,
   };
 }
 
 export function validarRecepcionCompra(body) {
   const entrada = body || {};
-  if (typeof entrada.iva_incluido !== 'boolean') throw new AppError('El campo iva_incluido debe ser booleano.', 400);
-  const items = validarItems(entrada.items ?? [], { permitirVacio: true });
-  const itemsNoSolicitados = validarItemsNoSolicitados(entrada.items_no_solicitados ?? []);
+  const ivaIncluidoGlobal = validarIvaIncluidoGlobal(entrada.iva_incluido);
+  const items = validarItems(entrada.items ?? [], { permitirVacio: true, ivaIncluidoGlobal });
+  const itemsNoSolicitados = validarItemsNoSolicitados(entrada.items_no_solicitados ?? [], { ivaIncluidoGlobal });
   if (!items.length && !itemsNoSolicitados.length) throw new AppError('La recepción debe incluir al menos un ítem recibido.', 400);
   return {
     n_factura: validarNumeroFactura(entrada.n_factura),
     fecha: validarFechaCalendario(entrada.fecha),
-    iva_incluido: entrada.iva_incluido,
+    iva_incluido: derivarIvaIncluidoGlobal([...items, ...itemsNoSolicitados], ivaIncluidoGlobal),
     items,
     items_no_solicitados: itemsNoSolicitados,
   };

@@ -1,4 +1,5 @@
 import AppError from '../errors/AppError.js';
+import { PRESENTACIONES_COMPRA } from '../utils/compras.js';
 import { normalizarNombreInsumo, UNIDADES_INSUMO } from '../utils/insumos.js';
 
 const TIPOS_INSUMO = ['Insumo', 'Producto insumo'];
@@ -171,4 +172,21 @@ export function validarFiltrosInsumos(query) {
     filtros.estado = query.estado === 'true';
   }
   return filtros;
+}
+
+/**
+ * Presentación de compra de un insumo (regla 2.2): cuántas unidades base
+ * trae cada paca/caja/sixpack, etc.
+ */
+export function validarGuardarPresentacion(body) {
+  const entrada = body || {};
+  const presentacion = typeof entrada.presentacion === 'string' ? entrada.presentacion.trim() : '';
+  if (!PRESENTACIONES_COMPRA.includes(presentacion)) {
+    throw new AppError(`El campo presentacion no es válido (${PRESENTACIONES_COMPRA.join(', ')}).`, 400);
+  }
+  const unidades_base = numero(entrada.unidades_base, 'unidades_base');
+  if (unidades_base <= 0) throw new AppError('El campo unidades_base debe ser un número mayor que cero.', 400);
+  const estado = entrada.estado === undefined ? true : entrada.estado;
+  if (typeof estado !== 'boolean') throw new AppError('El campo estado debe ser booleano.', 400);
+  return { presentacion, unidades_base, estado };
 }

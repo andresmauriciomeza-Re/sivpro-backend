@@ -1,8 +1,9 @@
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
-import { convertirCantidadCompra, calcularImporteLinea } from '../utils/compras.js';
+import { calcularImporteLinea, convertirABase, convertirCantidadCompra, resolverModoIva } from '../utils/compras.js';
 import { redondearDosDecimales } from '../utils/insumos.js';
 import { crearCompraEnTransaccion } from './compras.service.js';
+import { convertirItemABase } from './presentaciones.service.js';
 import { recalcularRecepcionEnTransaccion } from './recepcionOrden.service.js';
 
 const TRANSICIONES = {
@@ -48,7 +49,7 @@ async function validarProveedorActivo(client, idProveedor) {
   return rows[0];
 }
 
-async function validarItemsOrdenCompra(client, items) {
+export async function validarItemsOrdenCompra(client, items) {
   const resultado = [];
   for (const item of items) {
     if (item.id_insumo != null) {
@@ -63,13 +64,25 @@ async function validarItemsOrdenCompra(client, items) {
       if (!insumo) throw new AppError('Insumo no encontrado.', 404);
       if (!insumo.estado) throw new AppError(`El insumo «${insumo.nombre}» está inactivo.`, 409);
       const unidadInsumo = String(insumo.unidad_medida ?? '').trim();
-      if (!item.medida || item.medida.toLowerCase() !== unidadInsumo.toLowerCase()) {
-        throw new AppError(
-          `La medida «${item.medida ?? ''}» no coincide con la unidad de medida del insumo «${insumo.nombre}» (${unidadInsumo}).`,
-          400
-        );
+      if (!item.medida || !String(item.medida).trim()) {
+        throw new AppError(`La medida del insumo «${insumo.nombre}» es obligatoria.`, 400);
       }
-      resultado.push({ ...item, medida: unidadInsumo, nombre: insumo.nombre });
+      // Regla 2.2: se acepta la unidad del insumo (comparada sin distinguir
+      // mayúsculas), una conversión directa (kg<->g, lt<->ml) y las
+      // presentaciones de compra con su factor configurado o proporcionado.
+      // convertirItemABase lanza 400 con mensaje en español si la medida no
+      // es compatible o si falta el contenido de la presentación.
+      const { unidadesBase, unidadBase } = await convertirItemABase(client, item, insumo);
+      const medidaLimpia = String(item.medida).trim();
+      const medidaNormalizada =
+        medidaLimpia.toLowerCase() === unidadInsumo.toLowerCase() ? unidadInsumo : medidaLimpia;
+      resultado.push({
+        ...item,
+        medida: medidaNormalizada,
+        nombre: insumo.nombre,
+        unidades_base: unidadesBase,
+        unidad_base: unidadBase,
+      });
       continue;
     }
     const { rows } = await client.query(
@@ -130,7 +143,8 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     const items = await ejecutar(
       `SELECT d.id_dorcompra, d.id_insumo, d.id_producto,
               COALESCE(d.nombre, i.nombre, p.nombre) AS nombre,
-              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal
+              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal,
+              d.modo_iva, d.unidades_base, d.unidad_base
          FROM tb_detalleordencompra d
          LEFT JOIN tb_insumo i ON i.id_insumo = d.id_insumo
          LEFT JOIN tb_productos p ON p.id_producto = d.id_producto
@@ -158,7 +172,8 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     const recibidos = idComprasRecibidas.length
       ? await ejecutar(
         `SELECT id_compra, id_insumo, id_producto, cantidad, medida,
-                precio_unitario, iva, subtotal, es_no_solicitado, nombre
+                precio_unitario, iva, subtotal, es_no_solicitado, nombre,
+                unidades_base
            FROM tb_detallecompra
           WHERE id_compra = ANY($1::integer[])
           ORDER BY id_dcompra`,
@@ -209,18 +224,51 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     const key = idInsumo != null ? `i:${idInsumo}` : `p:${idProducto}`;
     const listaRecibidos = recibidosPorItem.get(key) || [];
     const facturado = listaRecibidos.length > 0;
-    let recibida = 0;
+    // Regla 2.2: cuando la línea de la orden tiene unidades_base, lo
+    // facturado se acumula en la unidad base del insumo (así se comparan
+    // compras hechas en distinta presentación, p. ej. 1 paca vs 20 kg) y
+    // luego se vuelve a la unidad de la orden para mostrarlo. Las líneas
+    // antiguas sin unidades_base conservan la conversión histórica.
+    const enBase = row.unidades_base != null && row.unidad_base != null;
+    let recibidaBase = 0;
+    let recibidaEnUnidad = 0;
     for (const det of listaRecibidos) {
+      if (enBase) {
+        if (det.unidades_base != null) {
+          recibidaBase += Number(det.unidades_base);
+          continue;
+        }
+        try {
+          recibidaBase += convertirABase({
+            cantidad: det.cantidad,
+            medida: det.medida,
+            unidadBase: row.unidad_base,
+            nombre: det.nombre || row.nombre,
+          });
+          continue;
+        } catch {
+          // Sin conversión posible: se usa el camino histórico de abajo.
+        }
+      }
       try {
-        recibida += convertirCantidadCompra(det.cantidad, det.medida, row.medida, det.nombre || row.nombre);
+        recibidaEnUnidad += convertirCantidadCompra(det.cantidad, det.medida, row.medida, det.nombre || row.nombre);
       } catch {
-        recibida += Number(det.cantidad);
+        recibidaEnUnidad += Number(det.cantidad);
       }
     }
+    const ratio = enBase && Number(row.unidades_base) !== 0 ? cantidad / Number(row.unidades_base) : 1;
+    const recibida = enBase ? recibidaBase * ratio + recibidaEnUnidad : recibidaEnUnidad;
     const cantidadRecibida = Number(recibida.toFixed(6));
     const cantidadPendiente = facturado ? 0 : Number(cantidad.toFixed(6));
     if (!facturado) {
-      montoPorFacturar += calcularImporteLinea(cantidad, precioUnitario, iva, true).subtotal;
+      // Regla 2.1: el por facturar usa el modo de IVA de cada línea
+      // (las líneas antiguas, sin modo, siguen con IVA incluido).
+      montoPorFacturar += calcularImporteLinea(
+        cantidad,
+        precioUnitario,
+        iva,
+        resolverModoIva({ modo_iva: row.modo_iva }, true)
+      ).subtotal;
     }
     return {
       id_dorcompra: Number(row.id_dorcompra),
@@ -232,6 +280,9 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
       medida: row.medida,
       precio_unitario: precioUnitario,
       iva,
+      modo_iva: row.modo_iva ?? 'incluido',
+      unidades_base: row.unidades_base == null ? null : Number(row.unidades_base),
+      unidad_base: row.unidad_base ?? null,
       subtotal: Number(row.subtotal),
       cantidad_recibida: cantidadRecibida,
       cantidad_pendiente: cantidadPendiente,
@@ -250,6 +301,8 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
           pendiente: it.cantidad_pendiente,
           facturado: it.facturado,
           unidad: it.medida,
+          unidades_base: it.unidades_base,
+          unidad_base: it.unidad_base,
         })),
         extras: [...extrasPorItem.values()].map((extra) => ({
           ...extra,
@@ -311,15 +364,20 @@ async function estadoActual(client, idOrdenCompra) {
 async function insertarItems(client, idOrdenCompra, items) {
   let total = 0;
   for (const item of items) {
-    const importe = calcularImporteLinea(item.cantidad, item.precio_unitario, item.iva, true);
+    // Regla 2.1: modo de IVA por ítem (por defecto 'incluido', como se
+    // calculaba siempre en las órdenes de compra).
+    const modoIva = resolverModoIva(item, undefined);
+    const importe = calcularImporteLinea(item.cantidad, item.precio_unitario, item.iva, modoIva);
     total += importe.subtotal;
     await client.query(
       `INSERT INTO tb_detalleordencompra
          (id_ocompra, id_insumo, id_producto, cantidad, medida,
-          precio_unitario, iva, subtotal, nombre)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          precio_unitario, iva, modo_iva, subtotal, nombre,
+          unidades_base, unidad_base)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [idOrdenCompra, item.id_insumo, item.id_producto, item.cantidad, item.medida,
-        item.precio_unitario, item.iva, importe.subtotal, item.nombre]
+        item.precio_unitario, item.iva, modoIva, importe.subtotal, item.nombre,
+        item.unidades_base ?? null, item.unidad_base ?? null]
     );
   }
   return redondearDosDecimales(total);
@@ -339,7 +397,8 @@ async function cargarOrdenesCompletas(ordenes) {
     query(
       `SELECT d.id_ocompra, d.id_dorcompra, d.id_insumo, d.id_producto,
               COALESCE(d.nombre, i.nombre, p.nombre) AS nombre,
-              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal
+              d.cantidad, d.medida, d.precio_unitario, d.iva, d.subtotal,
+              d.modo_iva, d.unidades_base, d.unidad_base
          FROM tb_detalleordencompra d
          LEFT JOIN tb_insumo i ON i.id_insumo = d.id_insumo
          LEFT JOIN tb_productos p ON p.id_producto = d.id_producto
@@ -375,7 +434,8 @@ async function cargarOrdenesCompletas(ordenes) {
     const resultado = await query(
       `SELECT c.id_ocompra AS _id_ocompra,
               d.id_compra, d.id_insumo, d.id_producto, d.cantidad, d.medida,
-              d.precio_unitario, d.iva, d.subtotal, d.es_no_solicitado, d.nombre
+              d.precio_unitario, d.iva, d.subtotal, d.es_no_solicitado, d.nombre,
+              d.unidades_base
          FROM tb_detallecompra d
          JOIN tb_compras c ON c.id_compra = d.id_compra
         WHERE c.id_ocompra = ANY($1::integer[])
@@ -506,7 +566,14 @@ export async function crearOrdenCompra(datos) {
 
 async function insertarItemsTempCalculo(client, items) {
   let total = 0;
-  for (const item of items) total += calcularImporteLinea(item.cantidad, item.precio_unitario, item.iva, true).subtotal;
+  for (const item of items) {
+    total += calcularImporteLinea(
+      item.cantidad,
+      item.precio_unitario,
+      item.iva,
+      resolverModoIva(item, undefined)
+    ).subtotal;
+  }
   return redondearDosDecimales(total);
 }
 
@@ -588,9 +655,30 @@ export async function recibirOrdenCompra(idOrdenCompra, datos) {
             409
           );
         }
-        const recibido = convertirCantidadCompra(item.cantidad, item.medida, pendiente.unidad, pendiente.nombre);
+        // Regla 2.2: si la línea de la orden tiene unidades_base, la
+        // comparación se hace en la unidad base del insumo (permite recibir
+        // una presentación distinta de la pedida, p. ej. 20 kg contra
+        // 1 paca). Si no (líneas antiguas), se conserva la conversión
+        // histórica a la unidad de la orden.
+        let recibido;
+        let limite;
+        if (item.id_insumo != null && pendiente.unidades_base != null && pendiente.unidad_base != null) {
+          const { rows: insumos } = await client.query(
+            `SELECT id_insumo, nombre, unidad_medida, estado
+               FROM tb_insumo
+              WHERE id_insumo = $1`,
+            [item.id_insumo]
+          );
+          const insumo = insumos[0];
+          if (!insumo) throw new AppError('Insumo no encontrado.', 404);
+          recibido = (await convertirItemABase(client, item, insumo)).unidadesBase;
+          limite = Number(pendiente.unidades_base);
+        } else {
+          recibido = convertirCantidadCompra(item.cantidad, item.medida, pendiente.unidad, pendiente.nombre);
+          limite = Number(pendiente.solicitada);
+        }
         const acumulado = (recibidasEnPeticion.get(claveItem(item)) || 0) + recibido;
-        if (acumulado > pendiente.solicitada + 0.000001) {
+        if (acumulado > limite + 0.000001) {
           throw new AppError(`La cantidad recibida de «${pendiente.nombre}» supera lo pedido en la orden.`, 400);
         }
         recibidasEnPeticion.set(claveItem(item), acumulado);

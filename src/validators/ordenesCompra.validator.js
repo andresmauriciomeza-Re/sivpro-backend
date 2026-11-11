@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { UNIDADES_COMPRA } from '../utils/compras.js';
+import { MODOS_IVA, UNIDADES_COMPRA, resolverModoIva } from '../utils/compras.js';
 
 const ESTADOS = ['Borrador', 'Enviado', 'Completado', 'Anulado'];
 const DEFAULT_PAGE = 1;
@@ -54,11 +54,29 @@ function validarItems(valor) {
 
     const cantidad = numero(item.cantidad, `items[${indice}].cantidad`);
     const precio_unitario = numero(item.precio_unitario, `items[${indice}].precio_unitario`);
-    const iva = item.iva === undefined ? 0 : numero(item.iva, `items[${indice}].iva`);
+    const ivaIngresado = item.iva === undefined ? 0 : numero(item.iva, `items[${indice}].iva`);
+    if (ivaIngresado < 0 || ivaIngresado > 100) throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
+    // Regla 2.1: modo de IVA por ítem (por defecto 'incluido', como se
+    // calculaba antes en la OC). Con 'exento' el porcentaje se fuerza a 0.
+    let modo_iva;
+    try {
+      modo_iva = resolverModoIva(item, undefined);
+    } catch {
+      throw new AppError(`El modo de IVA del ítem ${indice + 1} no es válido (${MODOS_IVA.join(', ')}).`, 400);
+    }
+    const iva = modo_iva === 'exento' ? 0 : ivaIngresado;
     if (cantidad <= 0) throw new AppError(`La cantidad del ítem ${indice + 1} debe ser mayor que cero.`, 400);
     if (precio_unitario <= 0) throw new AppError(`El precio del ítem ${indice + 1} debe ser mayor que cero.`, 400);
-    if (iva < 0 || iva > 100) throw new AppError(`El IVA del ítem ${indice + 1} debe estar entre 0 y 100.`, 400);
-    return { id_insumo, id_producto, cantidad, medida, precio_unitario, iva };
+    // Regla 2.2: factor de presentación opcional (si no viene, se usa el
+    // configurado en el insumo).
+    let factor_presentacion = null;
+    if (item.factor_presentacion !== undefined && item.factor_presentacion !== null && item.factor_presentacion !== '') {
+      factor_presentacion = numero(item.factor_presentacion, `items[${indice}].factor_presentacion`);
+      if (factor_presentacion <= 0) {
+        throw new AppError(`El factor de presentación del ítem ${indice + 1} debe ser mayor que cero.`, 400);
+      }
+    }
+    return { id_insumo, id_producto, cantidad, medida, precio_unitario, iva, modo_iva, factor_presentacion };
   });
 }
 

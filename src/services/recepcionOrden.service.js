@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { convertirCantidadCompra } from '../utils/compras.js';
+import { convertirABase, convertirCantidadCompra } from '../utils/compras.js';
 import { fechaHoraBogota } from '../utils/produccion.js';
 
 function claveItem(item) {
@@ -11,7 +11,8 @@ function claveItem(item) {
 export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra, { bloquear = false } = {}) {
   const clausulaBloqueo = bloquear ? 'FOR UPDATE' : '';
   const { rows: ordenes } = await client.query(
-    `SELECT id_dorcompra, id_insumo, id_producto, cantidad, medida, nombre
+    `SELECT id_dorcompra, id_insumo, id_producto, cantidad, medida, nombre,
+            unidades_base, unidad_base
        FROM tb_detalleordencompra
       WHERE id_ocompra = $1
       ORDER BY id_dorcompra
@@ -29,7 +30,7 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra, { 
   const { rows: detalles } = idCompras.length
     ? await client.query(
       `SELECT id_compra, id_insumo, id_producto, cantidad, medida,
-              es_no_solicitado, nombre
+              es_no_solicitado, nombre, unidades_base
          FROM tb_detallecompra
         WHERE id_compra = ANY($1::integer[])
         ORDER BY id_dcompra`,
@@ -67,15 +68,40 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra, { 
     const solicitado = Number(orden.cantidad);
     const listaRecibidos = recibidosPorItem.get(claveItem({ id_insumo: idInsumo, id_producto: idProducto })) || [];
     const facturado = listaRecibidos.length > 0;
-    let recibida = 0;
+    // Regla 2.2: si la línea de la orden tiene unidades_base, lo recibido
+    // se acumula en la unidad base del insumo (compara 1 paca contra 20 kg)
+    // y luego se expresa en la unidad de la orden. Sin ese dato (líneas
+    // antiguas) se conserva la conversión histórica.
+    const enBase = orden.unidades_base != null && orden.unidad_base != null;
+    let recibidaBase = 0;
+    let recibidaEnUnidad = 0;
     for (const detalle of listaRecibidos) {
+      if (enBase) {
+        if (detalle.unidades_base != null) {
+          recibidaBase += Number(detalle.unidades_base);
+          continue;
+        }
+        try {
+          recibidaBase += convertirABase({
+            cantidad: detalle.cantidad,
+            medida: detalle.medida,
+            unidadBase: orden.unidad_base,
+            nombre: detalle.nombre || orden.nombre,
+          });
+          continue;
+        } catch {
+          // Sin conversión posible: se usa el camino histórico de abajo.
+        }
+      }
       try {
-        recibida += convertirCantidadCompra(detalle.cantidad, detalle.medida, orden.medida, detalle.nombre || orden.nombre);
+        recibidaEnUnidad += convertirCantidadCompra(detalle.cantidad, detalle.medida, orden.medida, detalle.nombre || orden.nombre);
       } catch (error) {
         if (error instanceof AppError) throw error;
         throw new AppError('No se pudo convertir la unidad recibida para la orden.', 400);
       }
     }
+    const ratio = enBase && Number(orden.unidades_base) !== 0 ? solicitado / Number(orden.unidades_base) : 1;
+    const recibida = enBase ? recibidaBase * ratio + recibidaEnUnidad : recibidaEnUnidad;
     const pendiente = facturado ? 0 : solicitado;
     return {
       id_insumo: idInsumo,
@@ -86,6 +112,8 @@ export async function recalcularRecepcionEnTransaccion(client, idOrdenCompra, { 
       pendiente: Number(pendiente.toFixed(6)),
       facturado,
       unidad: orden.medida,
+      unidades_base: orden.unidades_base == null ? null : Number(orden.unidades_base),
+      unidad_base: orden.unidad_base ?? null,
     };
   });
   const extras = [...extrasPorItem.values()].map((extra) => ({
