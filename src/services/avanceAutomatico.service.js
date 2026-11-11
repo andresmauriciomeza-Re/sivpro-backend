@@ -3,7 +3,7 @@ import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
 import { ESTADOS_VENTA, MINUTOS_COMPLETAR_VENTA_LOCAL, ZONA_HORARIA_NEGOCIO } from '../config/ventas.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
 
-export async function avanzarAutomaticamente() {
+export async function avanzarAutomaticamente({ notificarVentaId = null } = {}) {
   const { rows: ordenes } = await query(
     `WITH completadas AS (
        UPDATE tb_orden_produccion
@@ -78,6 +78,7 @@ export async function avanzarAutomaticamente() {
     }
   }
   const ids = new Set([...ordenes, ...ventas].map((fila) => fila.id_venta).filter((id) => id != null));
+  if (notificarVentaId != null) ids.add(notificarVentaId);
   for (const id of ids) void notificarEstadoPedido(id);
   return rowCount;
 }

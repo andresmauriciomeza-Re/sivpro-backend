@@ -5,6 +5,7 @@ import {
   crearVentaCliente,
   crearVentaPanel,
   listarVentas,
+  marcarVentaLista,
   marcarDevolucion,
   obtenerVentaCliente,
   resolverDevolucion,
@@ -80,6 +81,12 @@ export async function verificarVentaController(req, res, next) {
     // Al aceptar puede rechazarse con 409 + faltantes de stock de pre-hechas.
     responderConFaltantes(error, res, next);
   }
+}
+
+export async function marcarVentaListaController(req, res, next) {
+  try {
+    res.json(await marcarVentaLista(idNumerico(req.params.id)));
+  } catch (error) { next(error); }
 }
 
 export async function anularVentaController(req, res, next) {

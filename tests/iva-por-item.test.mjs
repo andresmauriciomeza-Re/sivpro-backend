@@ -11,6 +11,7 @@ import {
 } from '../src/utils/compras.js';
 import { UNIDADES_INSUMO, UNIDADES_BASE_INSUMO, UNIDADES_BASE_LEGADAS, redondearDosDecimales } from '../src/utils/insumos.js';
 import { validarCrearCompra } from '../src/validators/compras.validator.js';
+import { validarCrearOrdenCompra } from '../src/validators/ordenesCompra.validator.js';
 
 // ---------------------------------------------------------------------------
 // Catálogos
@@ -251,6 +252,70 @@ test('validator: con exento el porcentaje se fuerza a 0', () => {
   });
   assert.equal(resultado.items[0].modo_iva, 'exento');
   assert.equal(resultado.items[0].iva, 0);
+});
+
+test('validator: IVA es obligatorio en modos gravados y cero sigue siendo válido', () => {
+  for (const iva of [undefined, null, '']) {
+    assert.throws(
+      () =>
+        validarCrearCompra({
+          ...baseCompra(),
+          items: [{ id_insumo: 1, cantidad: 1, medida: 'lt', precio_unitario: 100, iva }],
+        }),
+      (error) => error.statusCode === 400 && /IVA del ítem 1 es obligatorio/.test(error.message),
+    );
+  }
+  const cero = validarCrearCompra({
+    ...baseCompra(),
+    items: [{ id_insumo: 1, cantidad: 1, medida: 'lt', precio_unitario: 100, iva: 0 }],
+  });
+  assert.equal(cero.items[0].iva, 0);
+
+  assert.throws(
+    () =>
+      validarCrearCompra({
+        ...baseCompra(),
+        items: [{
+          id_insumo: 1,
+          cantidad: 1,
+          medida: 'lt',
+          precio_unitario: 100,
+          modo_iva: 'mas_iva',
+        }],
+      }),
+    (error) => error.statusCode === 400 && /IVA del ítem 1 es obligatorio/.test(error.message),
+  );
+
+  const exento = validarCrearCompra({
+    ...baseCompra(),
+    items: [{ id_insumo: 1, cantidad: 1, medida: 'lt', precio_unitario: 100, modo_iva: 'exento' }],
+  });
+  assert.equal(exento.items[0].iva, 0);
+});
+
+test('validator de orden de compra exige IVA salvo en modo exento', () => {
+  const baseOrden = {
+    id_proveedor: 1,
+    items: [{ id_insumo: 1, cantidad: 1, medida: 'kg', precio_unitario: 100 }],
+  };
+  assert.throws(
+    () => validarCrearOrdenCompra(baseOrden),
+    (error) => error.statusCode === 400 && /IVA del ítem 1 es obligatorio/.test(error.message),
+  );
+  assert.equal(
+    validarCrearOrdenCompra({
+      ...baseOrden,
+      items: [{ ...baseOrden.items[0], iva: 0 }],
+    }).items[0].iva,
+    0,
+  );
+  assert.equal(
+    validarCrearOrdenCompra({
+      ...baseOrden,
+      items: [{ ...baseOrden.items[0], modo_iva: 'exento' }],
+    }).items[0].iva,
+    0,
+  );
 });
 
 test('validator: modo_iva inválido, cantidad y precio sin positividad', () => {

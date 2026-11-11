@@ -1059,6 +1059,33 @@ async function preciosAutomaticos(client, idProducto, nombre) {
     `Precio ${p.tamano} asignado automáticamente ($${p.precio.toLocaleString('es-CO')}); revísalo en Productos${p.porDebajoDelCosto ? ' (por debajo del costo)' : ''}`);
 }
 
+export async function completarPedidoEnConexion(client, idOrden, ordenCargada = null) {
+  const { row } = ordenCargada ?? await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
+  if (row.tipo !== TIPO_PEDIDO || row.estado !== ESTADO_EN_PROCESO) {
+    throw new AppError('Solo se puede marcar como listo un pedido en proceso.', 409);
+  }
+  const historial = detalleHistoria(row.historial, {
+    de: ESTADO_EN_PROCESO,
+    a: ESTADO_COMPLETADA,
+    fechaHora: fechaHoraBogota().timestamp,
+    detalle: 'Marcado como listo',
+  });
+  await client.query(
+    `UPDATE tb_detalle_orden_produccion
+        SET cantidad_real = cantidad_estimada
+      WHERE id_orden_produccion = $1::int`,
+    [idOrden],
+  );
+  await client.query(
+    `UPDATE tb_orden_produccion
+        SET estado = $2, fecha_completada = now() AT TIME ZONE 'America/Bogota',
+            historial = $3::jsonb
+      WHERE id_orden_produccion = $1`,
+    [idOrden, ESTADO_COMPLETADA, JSON.stringify(historial)],
+  );
+  return { orden: (await obtenerOrdenEnConexion(client, idOrden)).orden, idVenta: row.id_venta };
+}
+
 async function completarPreparacion(idOrden, datos, automatico) {
   try {
     const resultado = await transaction(async (client) => {
@@ -1074,7 +1101,7 @@ async function completarPreparacion(idOrden, datos, automatico) {
         }
       }
       if (row.tipo === TIPO_PEDIDO) {
-        throw new AppError('Esta orden se completa sola al terminar los 25 minutos', 409);
+        return completarPedidoEnConexion(client, idOrden, { row });
       } else if (row.tipo === TIPO_PREPARACION) {
         validarTransicion(row.estado, ESTADO_COMPLETADA);
         if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
@@ -1245,7 +1272,12 @@ async function completarPreparacion(idOrden, datos, automatico) {
         idVenta: row.tipo === TIPO_PEDIDO ? row.id_venta : null,
       };
     });
-    if (resultado?.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    if (resultado?.idVenta != null) {
+      await avanzarAutomaticamente({ notificarVentaId: resultado.idVenta });
+      const { rows } = await query('SELECT estado FROM tb_venta WHERE id_venta = $1::int', [resultado.idVenta]);
+      if (!rows[0]) throw new AppError('Venta no encontrada.', 404);
+      resultado.orden.estado_venta = rows[0].estado;
+    }
     return resultado?.orden ?? null;
   } catch (error) {
     throw mapearError(error);
