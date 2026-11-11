@@ -4,8 +4,8 @@ import { pool } from '../src/config/db.js';
 import { iniciarOrdenProduccion } from '../src/services/ordenesProduccion.service.js';
 import { validarGenerarOrdenProduccion } from '../src/validators/ordenesProduccion.validator.js';
 
-for (const minutos of [35, 0]) {
-  test(`generar preparación sin fecha con ${minutos} minutos`, async () => {
+for (const [minutos, sinLineas] of [[35, false], [0, false], [35, true]]) {
+  test(`generar preparación sin fecha con ${minutos} minutos${sinLineas ? ' y sin líneas' : ''}`, async () => {
     const inicio = Date.parse('2026-11-06T12:00:00Z');
     const orden = {
       id_orden_produccion: 1, tipo: 'Preparacion', estado: 'Pendiente',
@@ -43,7 +43,7 @@ for (const minutos of [35, 0]) {
       release() {},
     });
     try {
-      const datos = validarGenerarOrdenProduccion({ lineas: [{ id_detalle_op: 11, cantidad: 1 }] });
+      const datos = validarGenerarOrdenProduccion(sinLineas ? {} : { lineas: [{ id_detalle_op: 11, cantidad: 1 }] });
       assert.equal('fecha_entrega_estimada' in datos, false);
       const resultado = await iniciarOrdenProduccion(1, datos);
       assert.equal(resultado.estado, 'En proceso');

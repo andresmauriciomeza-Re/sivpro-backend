@@ -825,10 +825,22 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
       const esVentaLocal = esOrdenVentaLocal(row);
-      if (esPedido) {
-        if (!datos.fecha_entrega_estimada) {
-          throw new AppError('Indica la fecha y hora límite.', 400);
+      if (esPedido && !datos.fecha_entrega_estimada) {
+        if (esVentaLocal) {
+          datos = { ...datos, fecha_limite_automatica: true };
+        } else {
+          const { rows } = await client.query(
+            `SELECT to_char(
+                CASE WHEN $2::time IS NOT NULL
+                       AND ($1::date + $2::time) > date_trunc('minute', CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota')
+                     THEN $1::date + $2::time
+                     ELSE (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') + $3::int * interval '1 minute'
+                END, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_limite`,
+            [row.fecha_solicitada, row.hora_solicitada, MINUTOS_CALENTAMIENTO_PEDIDO],
+          );
+          datos = { ...datos, fecha_entrega_estimada: rows[0]?.fecha_limite };
         }
+      } else if (esPedido) {
         if (datos.fecha_limite_automatica && !esVentaLocal) {
           throw new AppError('La fecha límite automática solo está disponible para ventas en el local.', 400);
         }
@@ -848,6 +860,15 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
       if (esPedido) {
         if (datos.lineas !== undefined) throw new AppError('No se puede cambiar la cantidad de un Pedido.', 400);
       } else {
+        if (datos.lineas === undefined) {
+          datos = {
+            ...datos,
+            lineas: lineas.map((linea) => ({
+              id_detalle_op: linea.id_detalle_op,
+              cantidad: Number(linea.cantidad_estimada),
+            })),
+          };
+        }
         if (!Array.isArray(datos.lineas) || datos.lineas.length !== lineas.length) {
           throw new AppError('Debes enviar la nueva cantidad de todas las líneas de la preparación.', 400);
         }

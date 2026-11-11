@@ -621,6 +621,48 @@ test('inicio local conserva una fecha editada sin limitarla por la recogida fict
   assert.equal(update[5], false);
 });
 
+test('inicio de pedido sin fecha: local automático; tienda usa recogida futura o ahora + 25 min', async () => {
+  const casos = [
+    { local: true, esperado: { automatica: true, fecha: undefined } },
+    { local: false, recogida: '2026-11-05T18:00:00', esperado: { automatica: false, fecha: '2026-11-05T18:00:00' } },
+    { local: false, recogida: '2026-11-05T12:25:00', esperado: { automatica: false, fecha: '2026-11-05T12:25:00' } },
+  ];
+  for (const caso of casos) {
+    const orden = {
+      id_orden_produccion: 99, id_venta: 31, tipo: 'Pedido', estado: 'Pendiente', es_venta_local: caso.local,
+      fecha_solicitada: '2026-11-05', hora_solicitada: '10:00:00', historial: [], insumos_requeridos: [],
+    };
+    let update; let calculo;
+    const base = { client: {
+      async query(sql, params = []) {
+        const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+        if (['begin', 'commit', 'rollback'].includes(consulta)) return { rows: [] };
+        if (consulta.includes('from tb_orden_produccion op')) return { rows: [{ ...orden }] };
+        if (consulta.includes('from tb_detalle_orden_produccion d')) return { rows: [] };
+        if (consulta.includes('as fecha_limite')) {
+          calculo = { consulta, params };
+          return { rows: [{ fecha_limite: caso.recogida }] };
+        }
+        if (consulta.startsWith('update tb_orden_produccion')) {
+          update = params;
+          orden.estado = params[1];
+          return { rows: [], rowCount: 1 };
+        }
+        throw new Error(`Consulta no esperada en prueba: ${consulta}`);
+      },
+      release() {},
+    } };
+    await conBaseSimulada(base, () => iniciarOrdenProduccion(99, validarGenerarOrdenProduccion({})));
+    assert.equal(update[5], caso.esperado.automatica);
+    assert.equal(update[2], caso.esperado.fecha);
+    if (caso.local) assert.equal(calculo, undefined);
+    else {
+      assert.match(calculo.consulta, /\$3::int \* interval '1 minute'/);
+      assert.deepEqual(calculo.params, ['2026-11-05', '10:00:00', 25]);
+    }
+  }
+});
+
 test('listado y detalle de órdenes exponen es_venta_local desde venta o historial', async () => {
   const queryOriginal = pool.query;
   pool.query = async (sql) => {
