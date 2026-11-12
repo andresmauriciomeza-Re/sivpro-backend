@@ -67,6 +67,20 @@ function numeroPositivo(valor, campo) {
   return resultado;
 }
 
+/**
+ * Peso de medida del insumo: cantidad exacta de una unidad del insumo
+ * (ej. 1200 g). Obligatorio al crear un tipo 'Insumo'; en la edición se
+ * omite para no cambiarlo y `null` lo limpia.
+ */
+function validarPesoMedida(valor, { requerido = false } = {}) {
+  const vacio = valor === undefined || valor === null || (typeof valor === 'string' && !valor.trim());
+  if (vacio) {
+    if (requerido) throw new AppError('El campo peso_medida es obligatorio.', 400);
+    return valor === undefined ? undefined : null;
+  }
+  return numeroPositivo(valor, 'peso_medida');
+}
+
 function validarPasos(valor) {
   if (valor === undefined || valor === null) return null;
   if (!Array.isArray(valor) || valor.some((paso) => typeof paso !== 'string')) {
@@ -104,6 +118,7 @@ export function validarCrearInsumo(body) {
   if (tipo === 'Insumo') {
     datos.costo_unitario = entrada.costo_unitario === undefined ? 0 : numero(entrada.costo_unitario, 'costo_unitario');
     datos.iva = entrada.iva === undefined ? 0 : numero(entrada.iva, 'iva');
+    datos.peso_medida = validarPesoMedida(entrada.peso_medida, { requerido: true });
     if (datos.costo_unitario < 0) throw new AppError('El costo_unitario no puede ser negativo.', 400);
     if (datos.iva < 0 || datos.iva > 100) throw new AppError('El iva debe estar entre 0 y 100.', 400);
     return datos;
@@ -153,6 +168,7 @@ export function validarEditarInsumo(body) {
     datos.iva = numero(entrada.iva, 'iva');
     if (datos.iva < 0 || datos.iva > 100) throw new AppError('El iva debe estar entre 0 y 100.', 400);
   }
+  if (entrada.peso_medida !== undefined) datos.peso_medida = validarPesoMedida(entrada.peso_medida);
   return datos;
 }
 

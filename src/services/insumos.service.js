@@ -6,7 +6,7 @@ import { fechaHoraBogota } from '../utils/produccion.js';
 
 const COLUMNAS_INSUMO = `
   i.id_insumo, i.id_categoria_insumo, i.nombre, i.tipo, i.unidad_medida,
-  i.stock_actual, i.stock_minimo, i.stock_maximo, i.costo_unitario,
+  i.peso_medida, i.stock_actual, i.stock_minimo, i.stock_maximo, i.costo_unitario,
   i.costo_maximo, i.iva, i.descripcion, i.tiempo_preparacion, i.estado,
   c.nombre AS categoria_nombre`;
 
@@ -105,6 +105,7 @@ function mapearInsumo(row, fichaVigente) {
     nombre: row.nombre,
     tipo: row.tipo,
     unidad_medida: row.unidad_medida,
+    peso_medida: numeroONull(row.peso_medida),
     stock_actual: Number(row.stock_actual),
     stock_minimo: Number(row.stock_minimo),
     stock_maximo: Number(row.stock_maximo),
@@ -281,16 +282,17 @@ export async function crearInsumo(datos) {
 
       const { rows } = await client.query(
         `INSERT INTO tb_insumo
-           (id_categoria_insumo, nombre, tipo, unidad_medida, stock_actual,
-            stock_minimo, stock_maximo, costo_unitario, iva, descripcion,
-            tiempo_preparacion, estado)
-         VALUES ($1, $2, $3, $4, 0, $5, 0, $6, $7, $8, $9, TRUE)
+           (id_categoria_insumo, nombre, tipo, unidad_medida, peso_medida,
+            stock_actual, stock_minimo, stock_maximo, costo_unitario, iva,
+            descripcion, tiempo_preparacion, estado)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, 0, $7, $8, $9, $10, TRUE)
          RETURNING id_insumo`,
         [
           datos.id_categoria_insumo,
           datos.nombre,
           datos.tipo,
           datos.unidad_medida,
+          datos.peso_medida ?? null,
           datos.stock_minimo,
           datos.tipo === 'Producto insumo' ? 0 : datos.costo_unitario,
           datos.iva,
@@ -367,6 +369,9 @@ export async function actualizarInsumo(idInsumo, datos) {
       if (datos.costo_unitario !== undefined || datos.iva !== undefined) {
         if (actual.tipo !== 'Insumo') throw new AppError('Solo los insumos tipo Insumo permiten editar costo_unitario e iva.', 400);
       }
+      if (datos.peso_medida !== undefined && actual.tipo !== 'Insumo') {
+        throw new AppError('Solo los insumos tipo Insumo permiten editar peso_medida.', 400);
+      }
       if (datos.unidad_medida !== undefined && datos.unidad_medida !== actual.unidad_medida) {
         const { rows: usoRows } = await client.query(
           `SELECT EXISTS (
@@ -387,7 +392,7 @@ export async function actualizarInsumo(idInsumo, datos) {
         if (datos[campo] !== undefined) cambios[campo] = datos[campo];
       }
       if (actual.tipo === 'Insumo') {
-        for (const campo of ['costo_unitario', 'iva']) {
+        for (const campo of ['costo_unitario', 'iva', 'peso_medida']) {
           if (datos[campo] !== undefined) cambios[campo] = datos[campo];
         }
       }
