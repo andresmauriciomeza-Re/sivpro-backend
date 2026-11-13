@@ -1,6 +1,12 @@
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
-import { calcularImporteLinea, convertirABase, convertirCantidadCompra, resolverModoIva } from '../utils/compras.js';
+import {
+  calcularImporteLinea,
+  convertirABase,
+  convertirCantidadCompra,
+  resolverEmpaqueProducto,
+  resolverModoIva,
+} from '../utils/compras.js';
 import { redondearDosDecimales } from '../utils/insumos.js';
 import { crearCompraEnTransaccion } from './compras.service.js';
 import { convertirItemABase } from './presentaciones.service.js';
@@ -86,7 +92,7 @@ export async function validarItemsOrdenCompra(client, items) {
       continue;
     }
     const { rows } = await client.query(
-      `SELECT id_producto, nombre, tipo, unidad_compra
+      `SELECT id_producto, nombre, tipo, unidad_compra, unidad_venta, unidades_por_empaque
          FROM tb_productos
         WHERE id_producto = $1
         FOR SHARE`,
@@ -95,11 +101,25 @@ export async function validarItemsOrdenCompra(client, items) {
     const producto = rows[0];
     if (!producto) throw new AppError('Producto no encontrado.', 404);
     if (producto.tipo !== 'Reventa') throw new AppError('Solo se pueden agregar productos Reventa a una orden de compra.', 400);
-    const unidadCompra = String(producto.unidad_compra || 'und').trim();
-    if (!item.medida || item.medida.toLowerCase() !== unidadCompra.toLowerCase()) {
-      throw new AppError(`La medida «${item.medida ?? ''}» no coincide con la unidad de compra de «${producto.nombre}» (${unidadCompra}).`, 400);
-    }
-    resultado.push({ ...item, medida: unidadCompra, nombre: producto.nombre });
+    // Punto 6: además de la unidad de compra del catálogo se acepta otra
+    // presentación (caja, paca, …) con su contenido o la unidad suelta.
+    const { medida, empaque, delCatalogo } = resolverEmpaqueProducto(producto, item);
+    resultado.push({
+      ...item,
+      medida,
+      nombre: producto.nombre,
+      // Sólo cuando la línea se aparta del catálogo se guarda lo que
+      // representa en unidades del producto: la recepción lo usa para
+      // recuperar el contenido de la presentación (unidades_base / cantidad)
+      // y comparar lo recibido. Las líneas que coinciden con el catálogo
+      // quedan exactamente como antes (sin unidades_base).
+      ...(delCatalogo
+        ? {}
+        : {
+          unidades_base: redondearDosDecimales(Number(item.cantidad) * empaque),
+          unidad_base: String(producto.unidad_venta || 'und').trim(),
+        }),
+    });
   }
   return resultado;
 }
