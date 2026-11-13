@@ -102,8 +102,8 @@ export async function rolBaseEfectivo(idRol, idUsuario) {
   return cliente[0] ?? { id_rol: idRol, nombre: actual.nombre };
 }
 
-export async function obtenerPermisos(idRolCuenta, idUsuario) {
-  const { id_rol: idRol } = await rolBaseEfectivo(idRolCuenta, idUsuario);
+export async function obtenerPermisos(idRolCuenta, idUsuario, rolBase) {
+  const { id_rol: idRol } = rolBase ?? (await rolBaseEfectivo(idRolCuenta, idUsuario));
   const [base, extra] = await Promise.all([
     consultar(PERMISOS_ROL_BASE, [idRol]),
     consultar(PERMISOS_ROLES_EXTRA, [idUsuario]),
@@ -143,8 +143,8 @@ export async function obtenerPermisosDeRol(idRol) {
   return [...permisos.values()];
 }
 
-async function obtenerRolesAsignados(idRolCuenta, idUsuario) {
-  const { id_rol: idRol } = await rolBaseEfectivo(idRolCuenta, idUsuario);
+async function obtenerRolesAsignados(idRolCuenta, idUsuario, rolBase) {
+  const { id_rol: idRol } = rolBase ?? (await rolBaseEfectivo(idRolCuenta, idUsuario));
   const { rows: extras } = await consultar(`
     SELECT DISTINCT r.id_rol, r.nombre
     FROM tb_empleado e
@@ -241,9 +241,12 @@ export async function obtenerUsuarioPorId(idUsuario) {
     throw new AppError('No autorizado.', 401);
   }
 
-  const permisos = await obtenerPermisos(usuario.id_rol, usuario.id_usuario);
-  const roles = await obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario);
-  usuario.rol = (await rolBaseEfectivo(usuario.id_rol, usuario.id_usuario)).nombre ?? usuario.rol;
+  const rolBase = await rolBaseEfectivo(usuario.id_rol, usuario.id_usuario);
+  const [permisos, roles] = await Promise.all([
+    obtenerPermisos(usuario.id_rol, usuario.id_usuario, rolBase),
+    obtenerRolesAsignados(usuario.id_rol, usuario.id_usuario, rolBase),
+  ]);
+  usuario.rol = rolBase.nombre ?? usuario.rol;
   return armarUsuario(usuario, permisos, roles);
 }
 

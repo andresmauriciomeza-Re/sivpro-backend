@@ -9,15 +9,19 @@ import { obtenerPermisos } from '../services/auth.service.js';
 export function requierePermiso({ modulo, nombre, privilegio, mensaje }) {
   return async (req, res, next) => {
     try {
-      const { rows } = await query(
-        'SELECT id_rol, estado FROM tb_usuarios WHERE id_usuario = $1',
-        [req.usuario.id]
-      );
-      const usuario = rows[0];
-      if (!usuario || !usuario.estado) {
-        return next(new AppError('No autorizado.', 403));
+      let idRol = req.usuario.idRol;
+      if (idRol === undefined) {
+        const { rows } = await query(
+          'SELECT id_rol, estado FROM tb_usuarios WHERE id_usuario = $1',
+          [req.usuario.id]
+        );
+        const usuario = rows[0];
+        if (!usuario || !usuario.estado) {
+          return next(new AppError('No autorizado.', 403));
+        }
+        idRol = usuario.id_rol;
       }
-      const permisos = await obtenerPermisos(usuario.id_rol, req.usuario.id);
+      const permisos = await obtenerPermisos(idRol, req.usuario.id);
       const permitido = permisos.some(
         (p) =>
           p.modulo === modulo &&
