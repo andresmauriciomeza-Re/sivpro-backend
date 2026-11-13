@@ -7,6 +7,7 @@ import {
   calcularImporteLinea,
   convertirCantidadCompra,
   derivarIvaIncluidoGlobal,
+  resolverEmpaqueProducto,
   resolverModoIva,
 } from '../utils/compras.js';
 import {
@@ -315,7 +316,7 @@ async function aplicarStockInsumo(client, item, importe, iva) {
 
 async function aplicarStockProducto(client, item, importe, iva) {
   const { rows } = await client.query(
-    `SELECT id_producto, nombre, tipo, unidad_compra, unidades_por_empaque
+    `SELECT id_producto, nombre, tipo, unidad_compra, unidad_venta, unidades_por_empaque
        FROM tb_productos
       WHERE id_producto = $1
       FOR UPDATE`,
@@ -324,12 +325,12 @@ async function aplicarStockProducto(client, item, importe, iva) {
   const producto = rows[0];
   if (!producto) throw new AppError('Producto no encontrado.', 404);
   if (producto.tipo !== 'Reventa') throw new AppError('Solo los productos Reventa admiten compras.', 400);
-  const unidadCompra = producto.unidad_compra || 'und';
-  if (item.medida !== unidadCompra) {
-    throw new AppError(`La medida «${item.medida}» no coincide con la unidad de compra de «${producto.nombre}» (${unidadCompra}).`, 400);
-  }
-  const empaque = unidadCompra === 'und' ? 1 : Number(producto.unidades_por_empaque);
-  if (!Number.isFinite(empaque) || empaque < 1) throw new AppError(`«${producto.nombre}» no tiene unidades por empaque válidas.`, 400);
+  // Punto 6: la línea puede comprarse en cualquier presentación (caja, paca,
+  // paq, bolsa, sixpack) con su CONTENIDO (factor_presentacion), que manda
+  // sobre las unidades por empaque del catálogo — igual que ya se hacía con
+  // los insumos (convertirItemABase) —, o en la unidad suelta del producto.
+  // Sin factor en la línea se conserva el cálculo histórico del catálogo.
+  const { empaque } = resolverEmpaqueProducto(producto, item);
   const unidades = Number(item.cantidad) * empaque;
   const costoUnitario = redondearDosDecimales(importe.subtotal / unidades);
   if (item.precio_venta <= costoUnitario) {
@@ -348,7 +349,17 @@ async function aplicarStockProducto(client, item, importe, iva) {
     // Compra, Orden de Compra o Recepción — sin convertirlo.
     ultimo_monto_digitado: item.precio_unitario,
   });
-  return { nombre: resultado.nombre, cantidad: item.cantidad, medida: item.medida, unidades_stock: unidades };
+  return {
+    nombre: resultado.nombre,
+    cantidad: item.cantidad,
+    medida: item.medida,
+    unidades_stock: unidades,
+    // Punto 6: lo que entró a inventario viaja en la línea (unidad real del
+    // producto) para poder anular exactamente lo mismo y mostrar
+    // "caja × 6 und" en el detalle de la compra.
+    unidades_base: unidades,
+    unidad_base: producto.unidad_venta?.trim() || 'und',
+  };
 }
 
 /** Crea una compra y actualiza existencias usando siempre la transacción del llamador. */
@@ -411,6 +422,10 @@ export async function crearCompraEnTransaccion(client, datos, {
     } else {
       const aplicado = await aplicarStockProducto(client, item, importe, item.iva);
       nombre = aplicado.nombre;
+      // Punto 6: las líneas de producto también guardan lo que entró a
+      // inventario (antes quedaba NULL y la anulación tenía que adivinarlo).
+      unidadesBase = aplicado.unidades_base;
+      unidadBase = aplicado.unidad_base;
     }
     await client.query(
       `INSERT INTO tb_detallecompra
@@ -536,10 +551,20 @@ export async function anularCompraEnTransaccion(client, idCompra, motivo, { reca
       );
       const producto = productos[0];
       if (!producto) throw new AppError(`No se puede anular: el producto «${detalle.nombre}» no existe.`, 409);
-      const empaque = detalle.medida === 'und' ? 1 : Number(producto.unidades_por_empaque);
-      if (!Number.isFinite(empaque) || empaque < 1) throw new AppError(`No se puede anular: no se conoce el empaque de «${producto.nombre}».`, 409);
+      // Punto 6: si la línea guardó lo que entró (unidades_base), se devuelve
+      // EXACTAMENTE eso — igual que ya se hacía con los insumos — aunque el
+      // Contenido de la línea haya sido distinto del catálogo. Las líneas
+      // antiguas sin ese dato conservan la conversión histórica.
+      let unidades;
+      if (detalle.unidades_base != null) {
+        unidades = Number(detalle.unidades_base);
+      } else {
+        const empaque = detalle.medida === 'und' ? 1 : Number(producto.unidades_por_empaque);
+        if (!Number.isFinite(empaque) || empaque < 1) throw new AppError(`No se puede anular: no se conoce el empaque de «${producto.nombre}».`, 409);
+        unidades = Number(detalle.cantidad) * empaque;
+      }
       try {
-        await revertirCompraEnTransaccion(client, detalle.id_producto, { unidades: Number(detalle.cantidad) * empaque });
+        await revertirCompraEnTransaccion(client, detalle.id_producto, { unidades });
       } catch (error) {
         if (error instanceof AppError && error.statusCode === 409) {
           throw new AppError(`No se puede anular: ya se usaron/vendieron unidades de «${producto.nombre}»`, 409);

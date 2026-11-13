@@ -158,6 +158,52 @@ export function convertirCantidadCompra(cantidad, medida, unidad, nombre) {
 }
 
 /**
+ * Punto 6: cuántas unidades del producto entran por CADA unidad de la línea
+ * (su `medida`) en una compra u orden de compra. Se acepta:
+ * - cualquier presentación de compra (paq, paca, caja, bolsa, sixpack) cuando
+ *   la línea trae su contenido (`factor_presentacion`), que tiene prioridad
+ *   sobre las unidades por empaque del catálogo;
+ * - la unidad de compra del catálogo (paca/caja con su empaque, o und), como
+ *   antes;
+ * - la unidad suelta del producto ("und" o su unidad de venta) → 1.
+ * Devuelve `{ medida, empaque, delCatalogo }`; `delCatalogo` es true cuando la
+ * línea coincide con lo configurado en el catálogo (mismo cálculo de siempre).
+ * Lanza 400 si la medida no aplica al producto.
+ */
+export function resolverEmpaqueProducto(producto, item) {
+  const nombre = producto?.nombre ?? 'el producto';
+  const unidadCompra = String(producto?.unidad_compra || 'und').trim();
+  const unidadVenta = String(producto?.unidad_venta || 'und').trim();
+  const medida = String(item?.medida ?? '').trim();
+  const empaqueCatalogo = unidadCompra === 'und' ? 1 : Number(producto?.unidades_por_empaque);
+  const factorLinea = item?.factor_presentacion == null || item.factor_presentacion === ''
+    ? Number.NaN
+    : Number(item.factor_presentacion);
+  const esDelCatalogo = medida.toLowerCase() === unidadCompra.toLowerCase();
+
+  if (PRESENTACIONES_COMPRA.includes(medida) && Number.isFinite(factorLinea) && factorLinea > 0) {
+    return {
+      medida,
+      empaque: factorLinea,
+      delCatalogo: esDelCatalogo && factorLinea === empaqueCatalogo,
+    };
+  }
+  if (esDelCatalogo) {
+    if (!Number.isFinite(empaqueCatalogo) || empaqueCatalogo < 1) {
+      throw new AppError(`«${nombre}» no tiene unidades por empaque válidas.`, 400);
+    }
+    return { medida: unidadCompra, empaque: empaqueCatalogo, delCatalogo: true };
+  }
+  if (medida === 'und' || medida.toLowerCase() === unidadVenta.toLowerCase()) {
+    return { medida, empaque: 1, delCatalogo: false };
+  }
+  if (PRESENTACIONES_COMPRA.includes(medida)) {
+    throw new AppError(`Indica cuántas unidades de «${nombre}» trae cada ${medida} (contenido de la presentación).`, 400);
+  }
+  throw new AppError(`La medida «${medida}» no coincide con la unidad de compra de «${nombre}» (${unidadCompra}).`, 400);
+}
+
+/**
  * Precio unitario convertido a "con IVA" según el modo de la línea
  * (acepta booleano por retrocompatibilidad). Con 'exento' no se suma nada.
  */
