@@ -24,7 +24,7 @@ export async function verificarToken(req, res, next) {
 
   try {
     const { rows } = await query(
-      `SELECT u.id_usuario, u.estado, u.token_version,
+      `SELECT u.id_usuario, u.estado, u.token_version, u.id_rol,
               r.nombre AS rol, r.estado AS rol_estado
          FROM tb_usuarios u
          JOIN tb_roles r ON r.id_rol = u.id_rol
@@ -41,7 +41,7 @@ export async function verificarToken(req, res, next) {
       return next(new AppError('La sesión ya no es válida. Inicia sesión nuevamente.', 401, 'SESION_INVALIDADA'));
     }
 
-    req.usuario = { id: usuario.id_usuario, rol: usuario.rol };
+    req.usuario = { id: usuario.id_usuario, rol: usuario.rol, idRol: usuario.id_rol };
     return next();
   } catch (error) {
     return next(error);
