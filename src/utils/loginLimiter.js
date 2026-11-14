@@ -1,6 +1,6 @@
 import AppError from '../errors/AppError.js';
 
-const MAX_INTENTOS = 5;
+const MAX_INTENTOS = 8;
 const VENTANA_MS = 15 * 60 * 1000;
 
 const intentos = new Map();
