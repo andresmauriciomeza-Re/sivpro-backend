@@ -4,6 +4,7 @@ import { requierePermiso } from '../middlewares/permisos.js';
 import {
   anularVentaController,
   cancelarVentaClienteController,
+  confirmarPagoVentaController,
   crearVentaClienteController,
   crearVentaPanelController,
   listarMisVentasController,
@@ -12,6 +13,8 @@ import {
   adelantarVentaController,
   marcarDevolucionController,
   obtenerMiVentaController,
+  obtenerMisPagosVentaController,
+  obtenerPagosVentaController,
   obtenerVentaController,
   resolverDevolucionController,
   subirComprobanteController,
@@ -28,10 +31,13 @@ const permisoVentas = (privilegio) => requierePermiso({
 
 router.post('/ventas', verificarToken, crearVentaClienteController);
 router.get('/ventas/mias', verificarToken, listarMisVentasController);
+router.get('/ventas/mias/:id/pagos', verificarToken, obtenerMisPagosVentaController);
 router.get('/ventas/mias/:id', verificarToken, obtenerMiVentaController);
 router.post('/ventas/panel', verificarToken, permisoVentas('Crear'), crearVentaPanelController);
 router.get('/ventas', verificarToken, permisoVentas('Ver'), listarVentasController);
 router.get('/ventas/:id', verificarToken, permisoVentas('Ver'), obtenerVentaController);
+router.get('/ventas/:id/pagos', verificarToken, permisoVentas('Ver'), obtenerPagosVentaController);
+router.patch('/ventas/:id/pagos/:idPago/confirmacion', verificarToken, permisoVentas('Editar'), confirmarPagoVentaController);
 router.patch('/ventas/:id/verificacion', verificarToken, permisoVentas('Editar'), verificarVentaController);
 router.post('/ventas/:id/listo', verificarToken, permisoVentas('Editar'), marcarVentaListaController);
 router.post('/ventas/:id/adelantar', verificarToken, permisoVentas('Editar'), adelantarVentaController);

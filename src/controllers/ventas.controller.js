@@ -2,6 +2,7 @@ import AppError from '../errors/AppError.js';
 import {
   anularVenta,
   cancelarVentaCliente,
+  confirmarPagoVenta,
   crearVentaCliente,
   crearVentaPanel,
   listarVentas,
@@ -9,6 +10,7 @@ import {
   adelantarVenta,
   marcarDevolucion,
   obtenerVentaCliente,
+  obtenerResumenPagos,
   resolverDevolucion,
   subirComprobanteCliente,
   verificarVenta,
@@ -17,14 +19,15 @@ import {
   validarAnulacion,
   validarClientePanel,
   validarComprobante,
+  validarConfirmacionPago,
   validarCrearVenta,
   validarVerificacion,
 } from '../validators/ventas.validator.js';
 import responderConFaltantes from '../utils/responderConFaltantes.js';
 
-function idNumerico(valor) {
+function idNumerico(valor, recurso = 'venta') {
   const id = Number(valor);
-  if (!Number.isSafeInteger(id) || id <= 0) throw new AppError('El id de venta no es válido.', 400);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new AppError(`El id de ${recurso} no es válido.`, 400);
   return id;
 }
 
@@ -71,6 +74,28 @@ export async function obtenerVentaController(req, res, next) {
 export async function obtenerMiVentaController(req, res, next) {
   try {
     res.json(await obtenerVentaCliente(req.usuario.id, idNumerico(req.params.id)));
+  } catch (error) { next(error); }
+}
+
+export async function obtenerPagosVentaController(req, res, next) {
+  try {
+    res.json(await obtenerResumenPagos(idNumerico(req.params.id)));
+  } catch (error) { next(error); }
+}
+
+export async function obtenerMisPagosVentaController(req, res, next) {
+  try {
+    res.json(await obtenerResumenPagos(idNumerico(req.params.id), String(req.usuario.id)));
+  } catch (error) { next(error); }
+}
+
+export async function confirmarPagoVentaController(req, res, next) {
+  try {
+    res.json(await confirmarPagoVenta(
+      idNumerico(req.params.id),
+      idNumerico(req.params.idPago, 'pago'),
+      validarConfirmacionPago(req.body)
+    ));
   } catch (error) { next(error); }
 }
 

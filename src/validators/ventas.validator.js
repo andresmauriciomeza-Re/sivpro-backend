@@ -97,6 +97,21 @@ function validarHoraRecogida(hora) {
   if (h < 12) throw new AppError('La hora de recogida debe ser en horario PM.', 400);
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
 }
+function validarMontoPago(valor, campo) {
+  if (!Number.isSafeInteger(valor) || valor <= 0) {
+    throw new AppError(`El campo ${campo} debe ser un entero en pesos mayor que cero.`, 400);
+  }
+  return valor;
+}
+
+export function validarConfirmacionPago(body) {
+  return validarMontoPago(body?.monto_confirmado, 'monto_confirmado');
+}
+
+function validarMontoDeclarado(valor) {
+  return valor == null ? null : validarMontoPago(valor, 'monto_declarado');
+}
+
 function validarPago(pago, { panel = false } = {}) {
   const tipo = texto(pago?.tipo, 'tipo de pago', 30);
   if (!TIPOS_PAGO.includes(tipo) || (!panel && tipo === 'Efectivo')) {
@@ -104,7 +119,7 @@ function validarPago(pago, { panel = false } = {}) {
   }
   const comprobante = pago?.comprobante == null ? null : texto(pago.comprobante, 'comprobante', 2048);
   if (!panel && !comprobante) throw new AppError('El comprobante de pago es obligatorio.', 400);
-  return { tipo, comprobante };
+  return { tipo, comprobante, montoDeclarado: validarMontoDeclarado(pago?.monto_declarado) };
 }
 
 export function validarCrearVenta(body, opciones = {}) {
@@ -130,11 +145,6 @@ export function validarVerificacion(body) {
   if (!['aceptar', 'monto_faltante', 'rechazar'].includes(accion)) {
     throw new AppError('La acción debe ser aceptar, monto_faltante o rechazar.', 400);
   }
-  if (accion === 'monto_faltante') {
-    const pagado = Number(body.pagado);
-    if (!Number.isFinite(pagado) || pagado < 0) throw new AppError('El monto pagado debe ser mayor o igual a cero.', 400);
-    return { accion, pagado };
-  }
   if (accion === 'rechazar') {
     return { accion, motivo: validarMotivoRechazo(body.motivo_rechazo) };
   }
@@ -157,7 +167,7 @@ export function validarComprobante(body) {
   const comprobante = texto(body?.comprobante, 'comprobante', 2048);
   const tipo = texto(body?.tipo, 'tipo de pago', 30);
   if (!['Nequi', 'Bancolombia'].includes(tipo)) throw new AppError('El tipo de pago no es válido.', 400);
-  return { comprobante, tipo };
+  return { comprobante, tipo, montoDeclarado: validarMontoDeclarado(body?.monto_declarado) };
 }
 
 export function validarClientePanel(body) {

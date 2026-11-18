@@ -28,6 +28,7 @@ export const TRANSICIONES_VENTA = Object.freeze([
   ['Por verificar', 'Por entregar'],
   ['Por verificar', 'Anulado'],
   ['En espera', 'Por verificar'],
+  ['En espera', 'Por entregar'],
   ['En espera', 'Anulado'],
   // Anulación desde el listado del panel: solo dentro de los primeros 10
   // minutos (esa regla de tiempo no vive aquí, se valida en la transacción).
