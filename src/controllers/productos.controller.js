@@ -1,6 +1,7 @@
 import { query } from '../config/db.js';
 import AppError from '../errors/AppError.js';
 import {
+  COLUMNAS_GALERIA_PRODUCTO,
   cambiarEstadoProducto,
   crearProducto,
   editarProducto,
@@ -22,6 +23,7 @@ export async function obtenerCatalogoPublico(req, res, next) {
       `SELECT p.id_producto, p.id_categoria, p.nombre, p.tipo,
               p.precio_venta, p.unidad_venta, p.imagen, p.estado,
               p.imagen_data IS NOT NULL AS tiene_imagen,
+              ${COLUMNAS_GALERIA_PRODUCTO},
               c.nombre AS categoria_nombre, c.descripcion AS categoria_descripcion,
               c.emoji AS categoria_emoji, p.stock,
               p.stock_partes, FLOOR(p.stock_partes::numeric / 3)::int AS disponibles_mediana,
@@ -60,6 +62,7 @@ export async function obtenerProductosGestion(req, res, next) {
               FLOOR(p.stock_partes::numeric / 4)::int AS disponibles_grande,
               p.imagen, p.estado,
               p.imagen_data IS NOT NULL AS tiene_imagen,
+              ${COLUMNAS_GALERIA_PRODUCTO},
               p.contenido, p.contenido_unidad, p.unidad_compra,
               p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
               p.ultimo_monto_digitado,

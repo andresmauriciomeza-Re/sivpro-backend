@@ -240,5 +240,9 @@ export function validarResolverDevolucion(body) {
   if (!Number.isFinite(monto) || monto < 0) {
     throw new AppError('El monto de la devolución debe ser mayor o igual a cero.', 400);
   }
-  return { tipo, nota, lineas, canje, monto };
+  const metodoReembolso = monto > 0 ? body?.metodo_reembolso : null;
+  if (monto > 0 && !TIPOS_PAGO.includes(metodoReembolso)) {
+    throw new AppError('Selecciona cómo se le devuelve el dinero al cliente.', 400);
+  }
+  return { tipo, nota, lineas, canje, monto, metodoReembolso };
 }
