@@ -19,15 +19,18 @@ function verificarCoherenciaTipoCategoria(nombreCategoria, tipo) {
   }
 }
 
-/** Mismo SELECT que GET /productos/gestion (idénticas columnas y aliases),
-    filtrado por id: es lo que devuelven POST, PUT, PATCH y las dos de compra
-    para que todas respondan "en el formato de /gestion". */
+export const COLUMNAS_GALERIA_PRODUCTO = `
+  ARRAY(SELECT i.url FROM tb_imagen_producto i
+         WHERE i.id_producto = p.id_producto ORDER BY i.orden) AS imagenes`;
+
+/** Mismas columnas que GET /productos/gestion para las respuestas de escritura. */
 const COLUMNAS_GESTION = `
   p.id_producto, p.id_categoria, p.nombre, p.tipo,
   p.precio_venta, p.costo_unitario, p.unidad_venta, p.stock,
   p.stock_partes, FLOOR(p.stock_partes::numeric / 3)::int AS disponibles_mediana,
   FLOOR(p.stock_partes::numeric / 4)::int AS disponibles_grande,
-  p.imagen, p.estado,
+  p.imagen, p.estado, p.imagen_data IS NOT NULL AS tiene_imagen,
+  ${COLUMNAS_GALERIA_PRODUCTO},
   p.contenido, p.contenido_unidad, p.unidad_compra,
   p.unidades_por_empaque, p.ultimo_monto_sin_iva, p.ultimo_iva_compra,
   p.ultimo_monto_digitado,
@@ -53,6 +56,18 @@ async function traerProductoGestion(conexion, idProducto) {
   );
   if (!rows[0]) throw new AppError('Producto no encontrado.', 404);
   return rows[0];
+}
+
+async function reemplazarGaleria(client, idProducto, imagenes) {
+  await client.query('DELETE FROM tb_imagen_producto WHERE id_producto = $1', [idProducto]);
+  if (imagenes.length) {
+    await client.query(
+      `INSERT INTO tb_imagen_producto (id_producto, url, orden)
+       SELECT $1, url, orden::smallint
+         FROM unnest($2::text[]) WITH ORDINALITY AS galeria(url, orden)`,
+      [idProducto, imagenes]
+    );
+  }
 }
 
 async function categoriaActiva(conexion, idCategoria) {
@@ -130,7 +145,7 @@ export async function crearProducto(datos) {
           datos.nombre,
           datos.tipo,
           datos.unidad_venta,
-          datos.imagen,
+          datos.imagenes === undefined ? datos.imagen : (datos.imagenes[0] ?? null),
           esElaborado ? precioVentaNuevo : 0,
           precioGrandeNuevo,
           'No disponible',
@@ -140,7 +155,9 @@ export async function crearProducto(datos) {
           datos.unidades_por_empaque,
         ]
       );
-      return await traerProductoGestion(client, rows[0].id_producto);
+      const idProducto = rows[0].id_producto;
+      if (datos.imagenes !== undefined) await reemplazarGaleria(client, idProducto, datos.imagenes);
+      return await traerProductoGestion(client, idProducto);
     });
   } catch (error) {
     throw mapearError(error);
@@ -221,7 +238,8 @@ export async function editarProducto(idProducto, datos) {
       let categoriaFinal = { nombre: actual.categoria_nombre };
       if (datos.nombre !== undefined) cambios.nombre = datos.nombre;
       if (datos.unidad_venta !== undefined) cambios.unidad_venta = datos.unidad_venta;
-      if (datos.imagen !== undefined) cambios.imagen = datos.imagen;
+      if (datos.imagenes !== undefined) cambios.imagen = datos.imagenes[0] ?? null;
+      else if (datos.imagen !== undefined) cambios.imagen = datos.imagen;
 
       if (datos.id_categoria !== undefined && datos.id_categoria !== actual.id_categoria) {
         const categoria = await categoriaActiva(client, datos.id_categoria);
@@ -265,6 +283,7 @@ export async function editarProducto(idProducto, datos) {
         );
       }
 
+      if (datos.imagenes !== undefined) await reemplazarGaleria(client, idProducto, datos.imagenes);
       return await traerProductoGestion(client, idProducto);
     });
   } catch (error) {

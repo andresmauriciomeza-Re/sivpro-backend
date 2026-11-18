@@ -12,6 +12,17 @@ const MIN_NOMBRE = 2;
 const MAX_NOMBRE = 100;
 const MAX_UNIDAD_VENTA = 20;
 const MAX_IMAGEN = 255;
+
+function validarGaleria(imagenes) {
+  if (!Array.isArray(imagenes) || imagenes.length > 4) {
+    throw new AppError('El producto admite hasta cuatro imágenes.', 400);
+  }
+  const urls = imagenes.map((url, i) => texto(url, `imagen ${i + 1}`, MAX_IMAGEN));
+  if (new Set(urls).size !== urls.length) {
+    throw new AppError('La galería no puede tener imágenes repetidas.', 400);
+  }
+  return urls;
+}
 const MIN_UNIDADES_EMPAQUE = 2;
 
 function texto(valor, campo, max) {
@@ -195,6 +206,7 @@ export function validarCreacionProducto(body) {
     tipo: validarTipo(entrada.tipo),
     unidad_venta: texto(entrada.unidad_venta, 'unidad_venta', MAX_UNIDAD_VENTA),
     imagen: textoOpcional(entrada.imagen, 'imagen', MAX_IMAGEN),
+    ...(entrada.imagenes === undefined ? {} : { imagenes: validarGaleria(entrada.imagenes) }),
   };
 
   if (datos.tipo === 'Elaborado') {
@@ -253,6 +265,7 @@ export function validarEdicionProducto(body) {
     datos.unidad_venta = texto(entrada.unidad_venta, 'unidad_venta', MAX_UNIDAD_VENTA);
   }
   if (entrada.imagen !== undefined) datos.imagen = textoOpcional(entrada.imagen, 'imagen', MAX_IMAGEN);
+  if (entrada.imagenes !== undefined) datos.imagenes = validarGaleria(entrada.imagenes);
   if (entrada.tipo !== undefined) datos.tipo = validarTipo(entrada.tipo);
   if (entrada.precio_venta !== undefined) datos.precio_venta = validarPrecioVenta(entrada.precio_venta);
   if (entrada.precio_grande !== undefined) datos.precio_grande = validarPrecioGrande(entrada.precio_grande);

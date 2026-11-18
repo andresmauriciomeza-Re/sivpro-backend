@@ -6,6 +6,7 @@ import {
   crearVentaPanel,
   listarVentas,
   marcarVentaLista,
+  adelantarVenta,
   marcarDevolucion,
   obtenerVentaCliente,
   resolverDevolucion,
@@ -86,6 +87,12 @@ export async function verificarVentaController(req, res, next) {
 export async function marcarVentaListaController(req, res, next) {
   try {
     res.json(await marcarVentaLista(idNumerico(req.params.id)));
+  } catch (error) { next(error); }
+}
+
+export async function adelantarVentaController(req, res, next) {
+  try {
+    res.json(await adelantarVenta(idNumerico(req.params.id)));
   } catch (error) { next(error); }
 }
 

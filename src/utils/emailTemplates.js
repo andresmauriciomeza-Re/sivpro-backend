@@ -1,3 +1,4 @@
+import { formatearFechaHora, formatearHora } from './hora.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PASOS_PEDIDO } from './estadoPedidoCliente.js';
@@ -144,23 +145,8 @@ function aCapitalo(texto) {
 }
 
 /** "17 de octubre de 2026, 11:09 p. m." en zona horaria America/Bogota. */
-function formatearFechaBogota(fecha = new Date()) {
-  const opciones = { timeZone: 'America/Bogota' };
-  const dia = new Intl.DateTimeFormat('es-CO', { ...opciones, day: 'numeric' }).format(fecha);
-  const mes = new Intl.DateTimeFormat('es-CO', { ...opciones, month: 'long' }).format(fecha);
-  const anio = new Intl.DateTimeFormat('es-CO', { ...opciones, year: 'numeric' }).format(fecha);
-  const hora = new Intl.DateTimeFormat('es-CO', {
-    ...opciones,
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
-    .format(fecha)
-    // Intl puede usar espacio fino (U+202F/U+00A0) antes de a. m./p. m.
-    .replace(/[\u202F\u00A0]/g, ' ')
-    .replace(/\bAM\b/i, 'a. m.')
-    .replace(/\bPM\b/i, 'p. m.');
-  return `${dia} de ${mes} de ${anio}, ${hora}`;
+function formatearFechaBogota(fecha) {
+  return formatearFechaHora(fecha, { fechaLarga: true });
 }
 
 /** Datos del local, configurables por entorno y con los valores de la Landing. */
@@ -270,10 +256,11 @@ export function buildEstadoPedidoEmail({
   estado,
   productos = [],
   total,
-  horaRecogida,
+  horaRecogida: horaRecogidaOriginal,
   motivo,
   montoReembolso,
 }) {
+  const horaRecogida = formatearHora(horaRecogidaOriginal);
   const nombreCompleto = String(nombre || '').trim() || 'cliente';
   const idTexto = String(id);
   const nombreSeguro = escaparHtml(nombreCompleto);
@@ -510,7 +497,7 @@ export function buildWelcomeEmail(datos) {
   const documentoMostrado = numeroDocumento
     ? `${etiquetaTipo} ${enmascararDocumento(numeroDocumento)}`
     : '—';
-  const fechaRegistro = datos?.fechaRegistro || formatearFechaBogota();
+  const fechaRegistro = formatearFechaBogota(datos?.fechaRegistro || undefined);
   const accesoAdmin = datos?.creadoPorAdmin === true
     ? '<p style="margin:0 0 16px;color:#3f3f46;line-height:1.7;">Para entrar, usa <strong>¿Olvidaste tu contraseña?</strong> en el inicio de sesión para crear tu contraseña.</p>'
     : '';
@@ -707,7 +694,7 @@ export function buildWelcomeEmail(datos) {
  */
 export function buildPasswordChangedEmail({ nombre, fecha } = {}) {
   const nombreSeguro = escaparHtml(nombre || 'usuario');
-  const fechaTexto = escaparHtml(fecha || formatearFechaBogota());
+  const fechaTexto = escaparHtml(formatearFechaBogota(fecha || undefined));
   const local = datosDelLocal();
   const telefono = escaparHtml(local.telefono);
   const telLocal = numeroDeTelefono(local.telefono);
@@ -801,19 +788,8 @@ function urlFrontendPrincipal() {
   return urlDelFrontend().split(',')[0].trim().replace(/\/+$/, '');
 }
 
-/** 'YYYY-MM-DD' → "01 de marzo de 2026" (sin desfase de zona horaria: se arma
- *  la fecha con UTC y se formatea en UTC para leer solo el día calendario). */
-function formatearFechaLarga(fechaIso) {
-  const texto = String(fechaIso ?? '').trim();
-  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto);
-  if (!partes) return texto || '—';
-  const fecha = new Date(Date.UTC(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3])));
-  return new Intl.DateTimeFormat('es-CO', {
-    timeZone: 'UTC',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(fecha);
+function formatearFechaLarga(fecha) {
+  return fecha ? formatearFechaBogota(fecha) : '—';
 }
 
 /** Datos comunes del resumen de la cuenta de empleado (tabla de filas). */

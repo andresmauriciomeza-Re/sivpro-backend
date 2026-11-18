@@ -672,6 +672,18 @@ export async function marcarDevolucion(idVenta) {
   } catch (error) { throw mapearError(error); }
 }
 
+const CAMBIO_SABOR = 'Cambio de sabor';
+
+// El motivo queda en las líneas y la devolución enlaza su venta de reemplazo.
+const existeCambioSabor = (idVentaSql) => `EXISTS (
+  SELECT 1
+    FROM tb_devolucion previa
+    JOIN tb_detalle_devolucion linea ON linea.id_devolucion = previa.id_devolucion
+   WHERE previa.estado = 'Resuelta'
+     AND linea.motivo = '${CAMBIO_SABOR}'
+     AND (previa.id_venta = ${idVentaSql} OR previa.id_venta_reemplazo = ${idVentaSql})
+)`;
+
 /** Resolución de una devolución: registra línea por línea lo que devuelve el
     cliente (tb_detalle_devolucion) y, si hay canje, crea la NUEVA VENTA del
     mismo cliente con esos productos + su orden de producción. Ese era el
@@ -694,13 +706,22 @@ export async function resolverDevolucion(idDevolucion, datos) {
       );
       const dev = rows[0];
       if (!dev) throw new AppError('Devolución no encontrada.', 404);
-      if (dev.estado === 'Resuelta') throw new AppError('La devolución ya fue resuelta.', 409);
       if (dev.venta_estado !== ESTADOS_VENTA.DEVOLUCION) {
         throw new AppError(`La venta ${dev.id_venta} no está en estado Devolucion.`, 409);
       }
 
       const entrada = validarResolverDevolucion(datos);
-      const { tipo, nota, lineas, canje, monto } = entrada;
+      const { tipo, nota, lineas, canje, monto, metodoReembolso } = entrada;
+      if (lineas.some((linea) => linea.motivo === CAMBIO_SABOR)) {
+        const { rows: historial } = await client.query(
+          `SELECT ${existeCambioSabor('$1')} AS bloqueo_cambio_sabor`,
+          [dev.id_venta]
+        );
+        if (historial[0].bloqueo_cambio_sabor) {
+          throw new AppError('Esta venta ya tuvo un cambio de sabor', 409);
+        }
+      }
+      if (dev.estado === 'Resuelta') throw new AppError('La devolución ya fue resuelta.', 409);
 
       // El producto de reemplazo debe existir y estar Disponible ANTES de
       // insertar el detalle: si no, la FK de id_producto_reemplazo revienta
@@ -826,9 +847,10 @@ export async function resolverDevolucion(idDevolucion, datos) {
       // ── 3. Cierre de la devolución ──
       await client.query(
         `UPDATE tb_devolucion
-            SET tipo = $1, monto = $2, nota = $3, estado = 'Resuelta', id_venta_reemplazo = $4
-          WHERE id_devolucion = $5`,
-        [tipo, monto, nota, idVentaReemplazo, idDevolucion]
+            SET tipo = $1, monto = $2, nota = $3, estado = 'Resuelta',
+                id_venta_reemplazo = $4, metodo_reembolso = $5
+          WHERE id_devolucion = $6`,
+        [tipo, monto, nota, idVentaReemplazo, metodoReembolso, idDevolucion]
       );
 
       return {
@@ -838,6 +860,7 @@ export async function resolverDevolucion(idDevolucion, datos) {
         id_orden_reemplazo: ordenReemplazo,
         tipo,
         monto,
+        metodo_reembolso: metodoReembolso,
         nota,
       };
     });
@@ -884,6 +907,39 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
 }
 
 export { avanzarAutomaticamente as avanzarVentasCompletadas } from './avanceAutomatico.service.js';
+
+export async function adelantarVenta(idVenta) {
+  try {
+    const venta = await transaction(async (client) => {
+      const { rows: ventas } = await client.query(
+        'SELECT estado FROM tb_venta WHERE id_venta = $1 FOR UPDATE',
+        [idVenta]
+      );
+      if (!ventas[0]) throw new AppError('Venta no encontrada.', 404);
+      if (ventas[0].estado !== ESTADOS_VENTA.POR_ENTREGAR) {
+        throw new AppError('Solo se puede adelantar una venta por entregar.', 409);
+      }
+      const { rows: ordenes } = await client.query(
+        `SELECT estado FROM tb_orden_produccion
+          WHERE id_venta = $1 AND tipo = 'Pedido'
+          ORDER BY id_orden_produccion DESC LIMIT 1`,
+        [idVenta]
+      );
+      if (ordenes[0] && ordenes[0].estado !== 'Completada') {
+        throw new AppError('La cocina aún no termina este pedido', 409);
+      }
+      const { rows } = await client.query(
+        `UPDATE tb_venta SET estado = $2, fecha_estado = clock_timestamp() AT TIME ZONE $3::text
+          WHERE id_venta = $1
+          RETURNING estado, to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_estado_local`,
+        [idVenta, ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO]
+      );
+      return rows[0];
+    });
+    void notificarEstadoPedido(idVenta);
+    return venta;
+  } catch (error) { throw mapearError(error); }
+}
 
 export async function marcarVentaLista(idVenta) {
   try {
@@ -966,6 +1022,7 @@ export async function listarVentas({
   const { rows } = await query(
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
             v.estado, v.fecha_estado, v.venta_local,
+            to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_estado_local,
             to_char(v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local,
             CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
             EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
@@ -975,7 +1032,9 @@ export async function listarVentas({
             d.id_devolucion, d.fecha AS devolucion_fecha,
             d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
             d.monto AS devolucion_monto, d.nota AS devolucion_nota,
+            d.metodo_reembolso,
             d.id_venta_reemplazo,
+            ${existeCambioSabor('v.id_venta')} AS bloqueo_cambio_sabor,
             GREATEST(0, ${SEGUNDOS_ANULACION}
                      - EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'America/Bogota') - v.fecha))
             )::integer AS segundos_restantes_anulacion,
