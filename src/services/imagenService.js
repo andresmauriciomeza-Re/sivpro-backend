@@ -32,21 +32,3 @@ export function subirImagen(buffer, carpeta = 'sivpro/productos', mimetype) {
     stream.end(buffer);
   });
 }
-
-export async function borrarImagen(publicId) {
-  if (!publicId) return { result: 'not_found' };
-
-  try {
-    const respuesta = await cloudinary.uploader.destroy(publicId, {
-      resource_type: 'image',
-    });
-    return respuesta;
-  } catch (error) {
-    console.error('Cloudinary destroy error:', {
-      publicId,
-      http_code: error?.error?.http_code,
-      message: error?.error?.message || error.message,
-    });
-    throw new AppError('No se pudo eliminar la imagen de Cloudinary.', 502);
-  }
-}

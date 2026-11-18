@@ -202,15 +202,3 @@ export function resolverEmpaqueProducto(producto, item) {
   }
   throw new AppError(`La medida «${medida}» no coincide con la unidad de compra de «${nombre}» (${unidadCompra}).`, 400);
 }
-
-/**
- * Precio unitario convertido a "con IVA" según el modo de la línea
- * (acepta booleano por retrocompatibilidad). Con 'exento' no se suma nada.
- */
-export function costoUnitarioConIva(precioUnitario, iva, modoIva) {
-  const precio = Number(precioUnitario);
-  const modo = normalizarModoIva(modoIva);
-  if (modo === 'incluido') return redondearDosDecimales(precio);
-  const tasa = modo === 'exento' ? 0 : Number(iva);
-  return redondearDosDecimales(precio * (1 + tasa / 100));
-}
