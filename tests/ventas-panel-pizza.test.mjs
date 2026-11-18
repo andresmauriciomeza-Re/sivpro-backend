@@ -87,14 +87,14 @@ function crearBaseVenta({ stockGrande = 10, producto = {}, productosExtra = [], 
         estado.ordenesInsertadas += 1;
         assert.match(consulta, /productos_descontados/);
         assert.doesNotMatch(consulta, /venta_local/);
-        assert.equal(params.length, 5);
-        assert.match(consulta, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
+        assert.equal(params.length, 6);
+        assert.match(consulta, /'en proceso', true, \$4::timestamp, \$6::int, \$4::timestamp \+ \$6::int \* interval '1 minute', \$5::jsonb/);
         estado.orden = {
           id_orden_produccion: 99,
           estado: 'En proceso',
           productos_descontados: true,
           fecha_en_proceso: params[3],
-          tiempo_preparacion_min: 25,
+          tiempo_preparacion_min: params[5],
           historial: JSON.parse(params[4]),
         };
         return { rows: [{ id_orden_produccion: 99 }] };
@@ -214,6 +214,7 @@ test('venta del panel queda por entregar, verifica el pago y crea OP sin doble d
     horaRecogida: null,
     lineas: [lineaGrande],
     pago: pagoLocal,
+    minutosPreparacion: 45,
   }));
 
   assert.equal(venta.estado, 'Por entregar');
@@ -222,7 +223,7 @@ test('venta del panel queda por entregar, verifica el pago y crea OP sin doble d
   assert.equal(base.estado.producto.stock_partes, 28);
   assert.equal(base.estado.ordenesInsertadas, 1);
   assert.equal(base.estado.orden.estado, 'En proceso');
-  assert.equal(base.estado.orden.tiempo_preparacion_min, 25);
+  assert.equal(base.estado.orden.tiempo_preparacion_min, 45);
   assert.ok(base.estado.orden.fecha_en_proceso);
   assert.deepEqual(base.estado.orden.historial[0], {
     de: null, a: 'En proceso', fechaHora: base.estado.orden.fecha_en_proceso, origen: 'venta_panel',
@@ -288,7 +289,7 @@ test('avance local usa 25 minutos u OP completada, sin aplicar esas reglas a tie
     const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     if (consulta.endsWith('for no key update')) return { rows: ventas };
     if (!consulta.startsWith('update tb_venta')) return { rows: [] };
-    assert.match(consulta, /venta_local = true and \( fecha_estado \+ interval '25 minutes' <= now\(\) at time zone \$2::text/);
+    assert.match(consulta, /venta_local = true and \( \(fecha_estado \+ interval '25 minutes' <= now\(\) at time zone \$2::text and not exists/);
     assert.match(consulta, /venta_local = false and hora_recogida is not null/);
     assert.match(consulta, /op\.estado is distinct from 'completada'/);
     assert.match(consulta, /set estado = \$1::text, fecha_estado = now\(\) at time zone \$2::text/);

@@ -1,3 +1,4 @@
+import { minutosValidosPedido } from '../config/produccion.js';
 import AppError from '../errors/AppError.js';
 
 const ESTADOS = ['Pendiente', 'En proceso', 'Completada', 'Cancelada'];
@@ -169,11 +170,21 @@ export function validarCrearOrdenProduccion(body) {
   };
 }
 
+export function validarMinutosPreparacionPedido(valor) {
+  if (!minutosValidosPedido(valor)) {
+    throw new AppError('El tiempo de preparación debe ser un entero entre 5 y 180 minutos.', 400);
+  }
+  return valor;
+}
+
 export function validarEditarOrdenProduccion(body) {
   const entrada = body || {};
   const datos = {};
   if (entrada.fecha_solicitada !== undefined) datos.fecha_solicitada = validarFecha(entrada.fecha_solicitada);
   if (entrada.hora_solicitada !== undefined) datos.hora_solicitada = validarHora(entrada.hora_solicitada);
+  if (entrada.tiempo_preparacion_min !== undefined) {
+    datos.tiempo_preparacion_min = validarMinutosPreparacionPedido(entrada.tiempo_preparacion_min);
+  }
   if (entrada.observacion !== undefined) datos.observacion = textoOpcional(entrada.observacion, 'observacion', 255);
   if (entrada.lineas !== undefined) datos.lineas = validarLineasPreparacion(entrada.lineas);
   return datos;

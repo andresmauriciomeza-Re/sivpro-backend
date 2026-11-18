@@ -37,8 +37,9 @@ function pizzaVentaClient(stockGrande) {
       if (consulta.startsWith('select dv.id_producto')) return { rows: [{ ...linea }] };
       if (consulta.startsWith('insert into tb_orden_produccion')) {
         assert.doesNotMatch(consulta, /venta_local/);
-        assert.equal(params.length, 5);
-        assert.match(consulta, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
+        assert.equal(params.length, 6);
+        assert.equal(params[5], 25);
+        assert.match(consulta, /'en proceso', true, \$4::timestamp, \$6::int, \$4::timestamp \+ \$6::int \* interval '1 minute', \$5::jsonb/);
         return { rows: [{ id_orden_produccion: 88 }] };
       }
       if (consulta.startsWith('insert into tb_detalle_orden_produccion')) return { rows: [] };

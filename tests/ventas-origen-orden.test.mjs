@@ -51,11 +51,12 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
     }
     if (texto.startsWith('insert into tb_orden_produccion')) {
       assert.doesNotMatch(texto, /\bventa_local\b/);
-      assert.equal(params.length, 5);
-      assert.match(texto, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
+      assert.equal(params.length, 6);
+      assert.equal(params[5], 25);
+      assert.match(texto, /'en proceso', true, \$4::timestamp, \$6::int, \$4::timestamp \+ \$6::int \* interval '1 minute', \$5::jsonb/);
       const orden = {
         id_orden_produccion: ordenes.length + 1, id_venta: params[0], tipo: 'Pedido',
-        estado: 'En proceso', fecha_en_proceso: params[3], tiempo_preparacion_min: 25,
+        estado: 'En proceso', fecha_en_proceso: params[3], tiempo_preparacion_min: params[5],
         historial: JSON.parse(params[4]), insumos_requeridos: [],
       };
       ordenes.push(orden);

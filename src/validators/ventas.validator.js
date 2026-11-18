@@ -1,3 +1,4 @@
+import { validarMinutosPreparacionPedido } from './ordenesProduccion.validator.js';
 import AppError from '../errors/AppError.js';
 
 const TIPOS_PAGO = ['Nequi', 'Bancolombia', 'Efectivo'];
@@ -118,7 +119,10 @@ export function validarCrearVenta(body, opciones = {}) {
   }
   const lineas = validarLineas(body?.productos);
   const pago = validarPago(body?.pago, opciones);
-  return { horaRecogida, lineas, pago };
+  const minutosPreparacion = opciones.panel && body?.tiempo_preparacion_min !== undefined
+    ? validarMinutosPreparacionPedido(body.tiempo_preparacion_min)
+    : undefined;
+  return { horaRecogida, lineas, pago, ...(minutosPreparacion !== undefined ? { minutosPreparacion } : {}) };
 }
 
 export function validarVerificacion(body) {

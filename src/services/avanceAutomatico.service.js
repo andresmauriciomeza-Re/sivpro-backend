@@ -1,10 +1,11 @@
 import { query, transaction } from '../config/db.js';
-import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { cierreManualPedidoSql, finPedidoSql } from '../config/produccion.js';
 import { ESTADOS_VENTA, MINUTOS_COMPLETAR_VENTA_LOCAL, ZONA_HORARIA_NEGOCIO } from '../config/ventas.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
 
 const ordenVencida = (alias, zona) =>
-  `${alias}.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes' <= now() AT TIME ZONE ${zona}::text`;
+  `${finPedidoSql(alias)} <= now() AT TIME ZONE ${zona}::text
+    AND NOT ${cierreManualPedidoSql(alias)}`;
 
 const pedidosDeVenta = `op.id_venta = tb_venta.id_venta AND op.tipo = 'Pedido'`;
 const tienePedidos = `EXISTS (SELECT 1 FROM tb_orden_produccion op WHERE ${pedidosDeVenta})`;
@@ -14,7 +15,8 @@ const todasCompletadas = `NOT EXISTS (
 )`;
 const ventaVencida = (zona) => `(
   (venta_local = TRUE AND (
-    fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' <= now() AT TIME ZONE ${zona}::text
+    (fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' <= now() AT TIME ZONE ${zona}::text
+      AND NOT EXISTS (SELECT 1 FROM tb_orden_produccion op WHERE ${pedidosDeVenta} AND op.estado <> 'Cancelada'))
     OR (${tienePedidos} AND ${todasCompletadas})
   ))
   OR (

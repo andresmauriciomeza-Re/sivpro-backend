@@ -15,7 +15,7 @@ import { estadoClientePedido } from '../utils/estadoPedidoCliente.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
 import { avanzarAutomaticamente } from './avanceAutomatico.service.js';
-import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { finPedidoSql, MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
 import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
 import { completarPedidoEnConexion } from './ordenesProduccion.service.js';
 
@@ -283,7 +283,7 @@ function mapearError(error) {
   return new AppError('No se pudo completar la operación de ventas.', 503);
 }
 
-async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago, ventaPanel = false }) {
+async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago, ventaPanel = false, minutosPreparacion = MINUTOS_CALENTAMIENTO_PEDIDO }) {
   // El panel registra una venta de producto listo para entrega inmediata. La
   // tienda conserva la hora automática de preparación cuando no viene una.
   const momento = horaRecogida ? validarFechaRecogida(horaRecogida) : fechaHoraBogota();
@@ -291,14 +291,16 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
     ? momento.timestamp.slice(11, 19)
     : horaAutoPreparacion());
   const productosCalculados = await cargarProductosParaVenta(client, lineas);
+  const requiereProduccion = ventaPanel && productosCalculados.some((linea) => linea.producto.tipo === 'Elaborado');
   const total = productosCalculados.reduce((suma, linea) => suma + linea.subtotal, 0);
   if (!Number.isFinite(total) || total < 0) throw new AppError('El total calculado no es válido.', 400);
   const venta = await client.query(
     `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local)
      VALUES ($1::int, $2::timestamp, $3::time, $4::numeric, $5::text, $2::timestamp, $6::boolean)
      RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local,
-               to_char(fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local`,
-    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel]
+               to_char(fecha_estado + $7::int * interval '1 minute', 'HH24:MI') AS hora_completado_local`,
+    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel,
+      requiereProduccion ? minutosPreparacion : MINUTOS_COMPLETAR_VENTA_LOCAL]
   );
   const idVenta = venta.rows[0].id_venta;
   for (const linea of productosCalculados) {
@@ -318,8 +320,8 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
   );
   if (ventaPanel) {
     await descontarInventarioVentaPanel(client, productosCalculados);
-    if (productosCalculados.some((linea) => linea.producto.tipo === 'Elaborado')) {
-      await crearOrdenProduccion(client, idVenta, { inventarioYaDescontado: true });
+    if (requiereProduccion) {
+      await crearOrdenProduccion(client, idVenta, { inventarioYaDescontado: true, minutosPreparacion });
     }
   }
   return { ...venta.rows[0], id_venta: Number(idVenta), pagos: [{ id_pago: Number(pagoInsertado.rows[0].id_pago), ...pago, depositado: montoPagadoInicial }] };
@@ -1028,9 +1030,13 @@ export async function listarVentas({
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
             v.estado, v.fecha_estado, v.venta_local,
             to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_estado_local,
-            to_char(v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local,
-            CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
-            EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
+            to_char(CASE WHEN op.estado <> 'Cancelada' THEN ${finPedidoSql('op')}
+                         ELSE v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' END, 'HH24:MI') AS hora_completado_local,
+            CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((
+              CASE WHEN op.estado <> 'Cancelada' THEN ${finPedidoSql('op')}
+                   ELSE v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' END
+            ) AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
+            EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
             v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
             op.estado AS estado_orden,
@@ -1049,7 +1055,7 @@ export async function listarVentas({
        JOIN tb_cliente c ON c.id_cliente = v.id_cliente
        JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
        LEFT JOIN LATERAL (
-         SELECT o.estado, o.fecha_en_proceso
+         SELECT o.estado, o.fecha_en_proceso, o.tiempo_preparacion_min
            FROM tb_orden_produccion o
           WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
           ORDER BY ${prioridadOrden} o.id_orden_produccion DESC

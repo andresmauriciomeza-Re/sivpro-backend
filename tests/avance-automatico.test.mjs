@@ -8,12 +8,13 @@ import { buildEstadoPedidoEmail } from '../src/utils/emailTemplates.js';
 test('avance automático respeta los 25 minutos y la recogida de tienda sin mover stock', async () => {
   const ordenes = [
     { id_orden_produccion: 1, id_venta: 1, tipo: 'Pedido', estado: 'En proceso', minutos: 25, estimada: 3, real: null },
-    { id_orden_produccion: 2, id_venta: 2, tipo: 'Pedido', estado: 'En proceso', minutos: 24.99, estimada: 2, real: null },
-    { id_orden_produccion: 3, id_venta: 3, tipo: 'Pedido', estado: 'En proceso', minutos: 26, estimada: 1, real: null },
-    { id_orden_produccion: 4, id_venta: 4, tipo: 'Pedido', estado: 'En proceso', minutos: 26, estimada: 1, real: null },
+    { id_orden_produccion: 2, id_venta: 2, tipo: 'Pedido', estado: 'En proceso', minutos: 25, preparacion: 40, estimada: 2, real: null },
+    { id_orden_produccion: 3, id_venta: 3, tipo: 'Pedido', estado: 'En proceso', minutos: 12, preparacion: 10, estimada: 1, real: null },
+    { id_orden_produccion: 4, id_venta: 4, tipo: 'Pedido', estado: 'En proceso', minutos: 26, preparacion: 181, estimada: 1, real: null },
     { id_orden_produccion: 5, id_venta: 5, tipo: 'Pedido', estado: 'Cancelada', minutos: 30, estimada: 1, real: null },
     { id_orden_produccion: 8, id_venta: 8, tipo: 'Pedido', estado: 'En proceso', minutos: 25, estimada: 1, real: null },
     { id_orden_produccion: 9, id_venta: 8, tipo: 'Pedido', estado: 'En proceso', minutos: 20, estimada: 1, real: null },
+    { id_orden_produccion: 10, id_venta: 10, tipo: 'Pedido', estado: 'En proceso', minutos: 26, preparacion: 5, cierreManual: true, estimada: 1, real: null },
     { id_orden_produccion: 6, id_venta: 6, tipo: 'Preparacion', estado: 'En proceso', minutos: 30, estimada: 1, real: null },
   ];
   const ventas = [
@@ -24,6 +25,7 @@ test('avance automático respeta los 25 minutos y la recogida de tienda sin move
     { id_venta: 5, local: true, minutos: 10, estado: 'Por entregar' },
     { id_venta: 7, local: true, minutos: 25, estado: 'Por entregar' },
     { id_venta: 8, local: false, recogidaPasada: false, estado: 'Por entregar' },
+    { id_venta: 10, local: true, minutos: 26, estado: 'Por entregar' },
   ];
   const { query: consultaOriginal, connect: conectarOriginal } = pool;
   const transporteOriginal = nodemailer.createTransport;
@@ -42,23 +44,25 @@ test('avance automático respeta los 25 minutos y la recogida de tienda sin move
     if (texto.startsWith('with completadas as')) {
       assert.equal(params[0], 'America/Bogota');
       assert.match(texto, /tipo = 'pedido' and estado = 'en proceso'/);
-      assert.match(texto, /fecha_en_proceso \+ interval '25 minutes' <= now\(\) at time zone \$1::text/);
+      assert.match(texto, /fecha_en_proceso \+ \(case when .*tiempo_preparacion_min between 5 and 180 then .*tiempo_preparacion_min else 25 end\) \* interval '1 minute'/);
+      assert.match(texto, /and not coalesce\( jsonb_path_query_array\(.*cierre_manual_por_tiempo/);
       assert.match(texto, /set cantidad_real = d\.cantidad_estimada/);
       assert.match(texto, /'automatico', true/);
       assert.doesNotMatch(texto, /tb_productos\b|tb_insumo\b/);
-      const actualizadas = ordenes.filter((o) => o.tipo === 'Pedido' && o.estado === 'En proceso' && o.minutos >= 25);
+      const actualizadas = ordenes.filter((o) => o.tipo === 'Pedido' && o.estado === 'En proceso' && !o.cierreManual
+        && o.minutos >= (o.preparacion >= 5 && o.preparacion <= 180 ? o.preparacion : 25));
       for (const o of actualizadas) { o.estado = 'Completada'; o.real = o.estimada; }
       return { rows: actualizadas.map(({ id_orden_produccion, id_venta }) => ({ id_orden_produccion, id_venta })) };
     }
     if (texto.startsWith('update tb_venta')) {
-      assert.match(texto, /venta_local = true and \(\s*fecha_estado \+ interval '25 minutes'/);
+      assert.match(texto, /venta_local = true and \( \(fecha_estado \+ interval '25 minutes'.*and not exists/);
       assert.match(texto, /venta_local = false and hora_recogida is not null/);
       assert.match(texto, /op\.estado is distinct from 'completada'/);
       const actualizadas = ventas.filter((v) => {
         const ops = pedidos(v.id_venta);
         const todasCompletadas = ops.every((o) => o.estado === 'Completada');
         return v.estado === 'Por entregar' && (v.local
-          ? v.minutos >= 25 || (ops.length > 0 && todasCompletadas)
+          ? (v.minutos >= 25 && ops.every((o) => o.estado === 'Cancelada')) || (ops.length > 0 && todasCompletadas)
           : v.recogidaPasada && todasCompletadas);
       });
       for (const v of actualizadas) v.estado = 'Completado';
@@ -83,10 +87,10 @@ test('avance automático respeta los 25 minutos y la recogida de tienda sin move
     assert.deepEqual(ordenes.map((o) => [o.estado, o.real]), [
       ['Completada', 3], ['En proceso', null], ['Completada', 1],
       ['Completada', 1], ['Cancelada', null], ['Completada', 1],
-      ['En proceso', null], ['En proceso', null],
+      ['En proceso', null], ['En proceso', null], ['En proceso', null],
     ]);
     assert.deepEqual(ventas.map((v) => v.estado), [
-      'Completado', 'Por entregar', 'Por entregar', 'Completado', 'Por entregar', 'Completado', 'Por entregar',
+      'Completado', 'Por entregar', 'Por entregar', 'Completado', 'Por entregar', 'Completado', 'Por entregar', 'Por entregar',
     ]);
     assert.equal(await avanzarAutomaticamente(), 0);
     await new Promise(setImmediate);
