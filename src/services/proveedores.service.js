@@ -2,7 +2,7 @@ import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
 
 const COLUMNAS = `id_proveedor, tipo_persona, nit, dv, nombre, nombre_comercial,
-  tipo_documento, numero_documento, tipo_sociedad, camara_comercio, fecha_exp_camara,
+  tipo_documento, numero_documento, tipo_sociedad, camara_comercio, to_char(fecha_exp_camara, 'YYYY-MM-DD') AS fecha_exp_camara,
   rep_legal_nombre, rep_legal_tipo_doc, rep_legal_num_doc, rep_legal_telefono, rep_legal_email,
   asesor_comercial, telefono, contacto_telefono_fijo, email, direccion, estado`;
 

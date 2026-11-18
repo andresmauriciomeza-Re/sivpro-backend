@@ -141,9 +141,9 @@ export function mensajeInsumoEnOrdenProduccion(nombreInsumo, orden) {
 async function obtenerCompraEnConexion(client, idCompra) {
   const ejecutar = typeof client === 'function' ? client : client.query.bind(client);
   const { rows } = await ejecutar(
-    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
+    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, to_char(c.fecha, 'YYYY-MM-DD') AS fecha,
             c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
-            c.motivo_anulacion, c.fecha_anulacion,
+            c.motivo_anulacion, to_char(c.fecha_anulacion, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_anulacion,
             p.nombre AS proveedor_nombre, p.nit AS proveedor_nit
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor
@@ -459,9 +459,9 @@ export async function listarCompras(filtros) {
     }
   }
   const { rows } = await query(
-    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, c.fecha,
+    `SELECT c.id_compra, c.id_ocompra, c.id_proveedor, c.n_factura, to_char(c.fecha, 'YYYY-MM-DD') AS fecha,
             c.iva_incluido, c.subtotal_sin_iva, c.total_iva, c.total, c.estado,
-            c.motivo_anulacion, c.fecha_anulacion,
+            c.motivo_anulacion, to_char(c.fecha_anulacion, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_anulacion,
             p.nombre AS proveedor_nombre, p.nit AS proveedor_nit
        FROM tb_compras c
        LEFT JOIN tb_proveedores p ON p.id_proveedor = c.id_proveedor

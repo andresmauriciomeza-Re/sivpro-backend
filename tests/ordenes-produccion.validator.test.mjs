@@ -121,7 +121,7 @@ test('solo el administrador ajusta pedidos activos y serializa el cambio con el 
         operaciones.push('bloquear venta');
         return { rows: [{ estado: 'Por entregar' }] };
       }
-      if (consulta.startsWith('select op.*')) {
+      if (consulta.includes('from tb_orden_produccion op')) {
         if (consulta.endsWith('for update of op')) operaciones.push('bloquear orden');
         return { rows: [{ ...row }] };
       }

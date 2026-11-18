@@ -132,11 +132,21 @@ async function cargarLineasOrden(client, idOrden) {
   return rows.map(mapearLinea);
 }
 
+const COLUMNAS_ORDEN = `
+  op.id_orden_produccion, op.tipo, op.id_venta, to_char(op.fecha_solicitada, 'YYYY-MM-DD') AS fecha_solicitada,
+  op.hora_solicitada, op.estado, op.observacion, to_char(op.fecha_creacion, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_creacion,
+  to_char(op.fecha_en_proceso, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_en_proceso,
+  to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_entrega_estimada,
+  to_char(op.fecha_completada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_completada,
+  to_char(op.fecha_cancelada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_cancelada,
+  op.venta_numero, op.cliente, op.historial, op.insumos_requeridos,
+  op.descripcion_preparacion, op.tiempo_preparacion_min, op.insumos_descontados,
+  op.productos_descontados, op.stock_aplicado`;
+
 function mapearOrden(row, lineas) {
   const {
     venta_numero_resuelto: ventaNumeroResuelto,
     cliente_resuelto: clienteResuelto,
-    fecha_entrega_estimada_local: fechaEntregaEstimadaLocal,
     preparacion_vencida: _preparacionVencida,
     venta_local: _ventaLocalAnterior,
     ...orden
@@ -157,7 +167,6 @@ function mapearOrden(row, lineas) {
     orden.tiempo_preparacion_min = MINUTOS_CALENTAMIENTO_PEDIDO;
   }
   orden.fecha_solicitada = fechaSql(orden.fecha_solicitada);
-  orden.fecha_entrega_estimada = fechaEntregaEstimadaLocal ?? null;
   orden.venta_numero = ventaNumeroResuelto ?? orden.venta_numero ?? null;
   orden.cliente = clienteResuelto ?? orden.cliente ?? null;
   orden.es_venta_local = esOrdenVentaLocal(row);
@@ -169,14 +178,13 @@ function mapearOrden(row, lineas) {
 
 async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}) {
   const { rows } = await client.query(
-    `SELECT op.*,
+    `SELECT ${COLUMNAS_ORDEN}, op.venta_local, op.notas_faltantes,
             CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
             CASE WHEN op.tipo = 'Pedido' THEN ${finPedidoSql('op')} > op.fecha_solicitada + op.hora_solicitada END AS listo_despues_recogida,
             CASE WHEN op.tipo = 'Pedido' AND op.estado = 'En proceso' THEN ${cierreManualPedidoSql('op')} END AS cierre_manual_por_tiempo,
             CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
             (op.tiempo_preparacion_min > 0 AND op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute' <= now() AT TIME ZONE 'America/Bogota') AS preparacion_vencida,
             COALESCE(v.venta_local, FALSE) AS es_venta_local,
-            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op
@@ -565,19 +573,12 @@ export async function listarOrdenesProduccion(filtros) {
     condiciones.push(`op.tipo = $${valores.length}::text`);
   }
   const { rows } = await query(
-    `SELECT op.id_orden_produccion, op.tipo, op.id_venta, op.fecha_solicitada,
-            op.fecha_entrega_estimada, op.hora_solicitada, op.estado, op.observacion,
-            op.venta_numero, op.cliente, op.fecha_creacion, op.fecha_en_proceso,
-            op.fecha_completada, op.fecha_cancelada, op.descripcion_preparacion,
-            op.tiempo_preparacion_min, op.insumos_descontados,
-            op.productos_descontados, op.stock_aplicado, op.historial,
-            op.insumos_requeridos,
+    `SELECT ${COLUMNAS_ORDEN},
             CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
             CASE WHEN op.tipo = 'Pedido' THEN ${finPedidoSql('op')} > op.fecha_solicitada + op.hora_solicitada END AS listo_despues_recogida,
             CASE WHEN op.tipo = 'Pedido' AND op.estado = 'En proceso' THEN ${cierreManualPedidoSql('op')} END AS cierre_manual_por_tiempo,
             CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
             COALESCE(v.venta_local, FALSE) AS es_venta_local,
-            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op

@@ -297,7 +297,8 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
   const venta = await client.query(
     `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local)
      VALUES ($1::int, $2::timestamp, $3::time, $4::numeric, $5::text, $2::timestamp, $6::boolean)
-     RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local,
+     RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, venta_local,
                to_char(fecha_estado + $7::int * interval '1 minute', 'HH24:MI') AS hora_completado_local`,
     [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel,
       requiereProduccion ? minutosPreparacion : MINUTOS_COMPLETAR_VENTA_LOCAL]
@@ -372,7 +373,7 @@ async function consultarResumenPagos(consultar, idVenta, titular) {
                 coalesce(sum(monto_declarado) FILTER (WHERE monto_confirmado IS NULL), 0) AS en_revision,
                 coalesce(json_agg(
                   json_build_object('id_pago', id_pago, 'id_venta', id_venta, 'tipo', tipo,
-                    'comprobante', comprobante, 'fecha', fecha, 'estado', estado,
+                    'comprobante', comprobante, 'fecha', to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 'estado', estado,
                     'monto_declarado', monto_declarado, 'monto_confirmado', monto_confirmado)
                   ORDER BY id_pago), '[]'::json) AS pagos
            FROM tb_pagos WHERE id_venta = v.id_venta
@@ -495,7 +496,8 @@ export async function verificarVenta(idVenta, datos) {
       const { rows: actualizadas } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4
           WHERE id_venta = $5
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, motivo_rechazo, anulado_por`,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, motivo_rechazo, anulado_por`,
         [hacia, fechaHoraBogota().timestamp, motivoRechazo, anuladoPor, idVenta]
       );
       return { ...actualizadas[0], id_orden_produccion: ordenId };
@@ -616,7 +618,8 @@ export async function anularVenta(idVenta, datos) {
             SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4,
                 monto_reembolso = $5, comprobante_anulacion = $6
           WHERE id_venta = $7
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado,
                     motivo_rechazo, anulado_por, monto_reembolso, comprobante_anulacion`,
         [
           ESTADOS_VENTA.ANULADO,
@@ -683,7 +686,8 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
             SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4,
                 monto_reembolso = $5, comprobante_anulacion = NULL
           WHERE id_venta = $6
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado,
                     motivo_rechazo, anulado_por, monto_reembolso`,
         [
           ESTADOS_VENTA.ANULADO,
@@ -740,7 +744,8 @@ export async function marcarDevolucion(idVenta) {
       const { rows: actualizada } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2
           WHERE id_venta = $3
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado`,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado`,
         [ESTADOS_VENTA.DEVOLUCION, fechaHoraBogota().timestamp, idVenta]
       );
       return { ...actualizada[0], id_devolucion: idDevolucion };
@@ -971,7 +976,7 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
       const { rows: actualizada } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2, motivo_rechazo = NULL, anulado_por = NULL
           WHERE id_venta = $3
-          RETURNING id_venta, estado, fecha_estado, monto`,
+          RETURNING id_venta, estado, to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, monto`,
         [ESTADOS_VENTA.POR_VERIFICAR, fechaHoraBogota().timestamp, idVenta]
       );
       return { ...actualizada[0], id_pago: Number(pago.id_pago) };
@@ -1098,8 +1103,8 @@ export async function listarVentas({
     ? `(o.estado = 'En proceso') DESC NULLS LAST, (o.estado IS DISTINCT FROM 'Completada') DESC,`
     : '';
   const { rows } = await query(
-    `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
-            v.estado, v.fecha_estado, v.venta_local,
+    `SELECT v.id_venta, v.id_cliente, to_char(v.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, v.hora_recogida, v.monto,
+            v.estado, to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, v.venta_local,
             to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_estado_local,
             to_char(CASE WHEN op.estado <> 'Cancelada' THEN ${finPedidoSql('op')}
                          ELSE v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' END, 'HH24:MI') AS hora_completado_local,
@@ -1111,7 +1116,7 @@ export async function listarVentas({
             v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
             op.estado AS estado_orden,
-            d.id_devolucion, d.fecha AS devolucion_fecha,
+            d.id_devolucion, to_char(d.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS devolucion_fecha,
             d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
             d.monto AS devolucion_monto, d.nota AS devolucion_nota,
             d.metodo_reembolso,
@@ -1151,7 +1156,7 @@ export async function listarVentas({
       [idsVentas]
     ),
     query(
-      `SELECT id_venta AS _id_venta, id_pago, tipo, fecha,
+      `SELECT id_venta AS _id_venta, id_pago, tipo, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha,
               ${incluirComprobantes ? 'comprobante,' : ''}
               (comprobante IS NOT NULL) AS tiene_comprobante,
               cantidad_pagar, depositado, faltante, estado

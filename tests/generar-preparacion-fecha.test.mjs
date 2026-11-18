@@ -33,9 +33,9 @@ for (const [minutos, sinLineas] of [[35, false], [0, false], [35, true]]) {
         if (q.startsWith('update tb_orden_produccion')) {
           update = { q, params };
           orden.estado = params[1];
-          orden.fecha_en_proceso = new Date(inicio).toISOString();
-          orden.fecha_entrega_estimada_local = minutos > 0
-            ? new Date(inicio + minutos * 60_000).toISOString()
+          orden.fecha_en_proceso = new Date(inicio).toISOString().slice(0, 19);
+          orden.fecha_entrega_estimada = minutos > 0
+            ? new Date(inicio + minutos * 60_000).toISOString().slice(0, 19)
             : null;
           return { rows: [], rowCount: 1 };
         }

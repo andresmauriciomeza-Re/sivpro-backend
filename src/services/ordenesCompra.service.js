@@ -141,9 +141,9 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     detallesRecibidos = datosPrecargados.detallesRecibidos;
   } else {
     const { rows } = await ejecutar(
-      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, o.total,
               p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
-              v.estado_actual, v.fecha_estado
+              v.estado_actual, to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_estado
          FROM tb_ordencompras o
          JOIN vw_ordencompras_estado v ON v.id_ocompra = o.id_ocompra
          JOIN tb_proveedores p ON p.id_proveedor = o.id_proveedor
@@ -153,7 +153,7 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     if (!rows[0]) throw new AppError('Orden de compra no encontrada.', 404);
     orden = rows[0];
     const historial = await ejecutar(
-      `SELECT estado, fecha_estado, motivo
+      `SELECT estado, to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_estado, motivo
          FROM tb_estadooc
         WHERE id_ocompra = $1
         ORDER BY fecha_estado, id_estadooc`,
@@ -179,7 +179,7 @@ async function cargarOrdenCompleta(client, idOrdenCompra, datosPrecargados = nul
     );
     recepcionGuardada = recepcion.rows[0]?.recepcion ?? null;
     const compras = await ejecutar(
-      `SELECT id_compra, n_factura, fecha, estado, total
+      `SELECT id_compra, n_factura, to_char(fecha, 'YYYY-MM-DD') AS fecha, estado, total
          FROM tb_compras
         WHERE id_ocompra = $1
         ORDER BY fecha, id_compra`,
@@ -408,7 +408,7 @@ async function cargarOrdenesCompletas(ordenes) {
   const idsOrdenes = ordenes.map((orden) => Number(orden.id_ocompra));
   const [historial, items, recepciones, compras] = await Promise.all([
     query(
-      `SELECT id_ocompra, estado, fecha_estado, motivo
+      `SELECT id_ocompra, estado, to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_estado, motivo
          FROM tb_estadooc
         WHERE id_ocompra = ANY($1::integer[])
         ORDER BY id_ocompra, fecha_estado, id_estadooc`,
@@ -433,7 +433,7 @@ async function cargarOrdenesCompletas(ordenes) {
       [idsOrdenes]
     ),
     query(
-      `SELECT id_ocompra, id_compra, n_factura, fecha, estado, total
+      `SELECT id_ocompra, id_compra, n_factura, to_char(fecha, 'YYYY-MM-DD') AS fecha, estado, total
          FROM tb_compras
         WHERE id_ocompra = ANY($1::integer[])
         ORDER BY id_ocompra, fecha, id_compra`,
@@ -526,9 +526,9 @@ export async function listarOrdenesCompra(filtros = {}) {
 
     const valoresPagina = [...valores, limit, offset];
     const { rows } = await query(
-      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+      `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, o.total,
               p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
-              v.estado_actual, v.fecha_estado
+              v.estado_actual, to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_estado
          ${baseFromSql}
         ORDER BY o.fecha DESC, o.id_ocompra DESC
         LIMIT $${valoresPagina.length - 1} OFFSET $${valoresPagina.length}`,
@@ -545,9 +545,9 @@ export async function listarOrdenesCompra(filtros = {}) {
   }
 
   const { rows } = await query(
-    `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD') AS fecha, o.total,
+    `SELECT o.id_ocompra, o.id_proveedor, to_char(o.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, o.total,
             p.nombre AS proveedor_nombre, p.nit AS proveedor_nit,
-            v.estado_actual, v.fecha_estado
+            v.estado_actual, to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_estado
        ${baseFromSql}
       ORDER BY o.fecha DESC, o.id_ocompra DESC`,
     valores
