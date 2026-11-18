@@ -818,9 +818,22 @@ export async function obtenerCalculoVerificacionProduccion(idOrden) {
   }
 }
 
+// Serializa los cambios de las órdenes de un pedido con el avance automático.
+async function bloquearVentaDePedido(client, idOrden) {
+  const { rows } = await client.query(
+    `SELECT v.estado
+       FROM tb_orden_produccion op JOIN tb_venta v ON v.id_venta = op.id_venta
+      WHERE op.id_orden_produccion = $1::int AND op.tipo = 'Pedido'
+      FOR NO KEY UPDATE OF v`,
+    [idOrden],
+  );
+  return rows[0];
+}
+
 export async function iniciarOrdenProduccion(idOrden, datos) {
   try {
     const resultado = await transaction(async (client) => {
+      const venta = await bloquearVentaDePedido(client, idOrden);
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
       validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
@@ -956,12 +969,26 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
           Boolean(datos.fecha_limite_automatica),
         ]
       );
+      let idVentaEnPreparacion = null;
+      if (esPedido && venta?.estado === 'Por entregar') {
+        const { rows } = await client.query(
+          `SELECT NOT EXISTS (
+             SELECT 1 FROM tb_orden_produccion
+              WHERE id_venta = $1 AND tipo = 'Pedido' AND estado = 'En proceso'
+                AND id_orden_produccion <> $2::int
+           ) AS primera`,
+          [row.id_venta, idOrden],
+        );
+        if (rows[0].primera) idVentaEnPreparacion = row.id_venta;
+      }
       return {
         orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
-        idVenta: esPedido ? row.id_venta : null,
+        idVentaEnPreparacion,
       };
     });
-    if (resultado.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    if (resultado.idVentaEnPreparacion != null) {
+      void notificarEstadoPedido(resultado.idVentaEnPreparacion, 'En proceso');
+    }
     return resultado.orden;
   } catch (error) {
     throw mapearError(error);
@@ -1083,12 +1110,28 @@ export async function completarPedidoEnConexion(client, idOrden, ordenCargada = 
       WHERE id_orden_produccion = $1`,
     [idOrden, ESTADO_COMPLETADA, JSON.stringify(historial)],
   );
-  return { orden: (await obtenerOrdenEnConexion(client, idOrden)).orden, idVenta: row.id_venta };
+  let pedidoListoId = null;
+  if (row.id_venta != null) {
+    const { rows } = await client.query(
+      `SELECT NOT EXISTS (
+         SELECT 1 FROM tb_orden_produccion
+          WHERE id_venta = $1 AND tipo = 'Pedido' AND estado IS DISTINCT FROM 'Completada'
+       ) AS todas_completadas`,
+      [row.id_venta],
+    );
+    if (rows[0].todas_completadas) pedidoListoId = row.id_venta;
+  }
+  return {
+    orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
+    idVenta: row.id_venta,
+    pedidoListoId,
+  };
 }
 
 async function completarPreparacion(idOrden, datos, automatico) {
   try {
     const resultado = await transaction(async (client) => {
+      if (!automatico) await bloquearVentaDePedido(client, idOrden);
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
 
       if (automatico && (row.tipo !== TIPO_PREPARACION || row.estado !== ESTADO_EN_PROCESO || !row.preparacion_vencida)) return null;
@@ -1273,7 +1316,7 @@ async function completarPreparacion(idOrden, datos, automatico) {
       };
     });
     if (resultado?.idVenta != null) {
-      await avanzarAutomaticamente({ notificarVentaId: resultado.idVenta });
+      await avanzarAutomaticamente({ pedidoListoId: resultado.pedidoListoId });
       const { rows } = await query('SELECT estado FROM tb_venta WHERE id_venta = $1::int', [resultado.idVenta]);
       if (!rows[0]) throw new AppError('Venta no encontrada.', 404);
       resultado.orden.estado_venta = rows[0].estado;

@@ -17,7 +17,7 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
   const consulta = async (sql, params = []) => {
     const texto = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     if (['begin', 'commit', 'rollback'].includes(texto) || texto.startsWith('select pg_advisory_xact_lock')) return { rows: [] };
-    if (texto.startsWith('with completadas as') || texto.startsWith('update tb_venta set estado = $1::text')) return { rows: [], rowCount: 0 };
+    if (texto.endsWith('for no key update') || texto.startsWith('with completadas as') || texto.startsWith('update tb_venta set estado = $1::text')) return { rows: [], rowCount: 0 };
     if (texto.startsWith("select id_orden_produccion from tb_orden_produccion where tipo = 'preparacion'")) return { rows: [] };
     if (texto.includes('as es_personal')) return { rows: [{ id_usuario: '10001', es_personal: false }] };
     if (texto.includes('as cliente_estado')) return { rows: [{ id_usuario: '10001', rol: 'Cliente', id_cliente: 5, cliente_estado: true }] };

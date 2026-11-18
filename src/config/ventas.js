@@ -1,6 +1,9 @@
 export const ZONA_HORARIA_NEGOCIO = 'America/Bogota';
 export const RECARGO_PIZZA_GRANDE = 2000;
 
+export const direccionRecogida = () =>
+  process.env.LOCAL_DIRECCION || 'Cra. 45 #104-30, Laureles, Medellín, Antioquia';
+
 /** Ventana en la que la venta todavía se puede anular (panel o cliente),
     contada DESDE tb_venta.fecha y validada siempre en el backend. */
 export const MINUTOS_ANULACION = 10;

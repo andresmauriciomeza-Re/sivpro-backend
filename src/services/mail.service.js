@@ -303,10 +303,7 @@ export async function enviarAvisoMontoFaltante(datos) {
 
 export async function enviarEstadoPedido(datos) {
   const correo = typeof datos?.correo === 'string' ? datos.correo.trim() : '';
-  if (!correo) {
-    console.error(`Correo de estado omitido: el pedido ${datos?.id ?? '?'} no tiene correo de destino`);
-    return;
-  }
+  if (!correo) return;
   if (!hayCredenciales()) {
     console.log(`Correo no configurado (MAIL_USER / MAIL_PASS): estado del pedido ${datos?.id ?? '?'} omitido`);
     return;

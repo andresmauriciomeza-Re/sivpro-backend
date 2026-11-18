@@ -6,7 +6,7 @@ const normalizarNombre = (valor) => {
     .map((palabra, indice) => indice > 0 && excepciones.has(palabra) ? palabra : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
 };
 import { query, transaction } from '../config/db.js';
-import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, MINUTOS_COMPLETAR_VENTA_LOCAL, puedeTransicionarVenta } from '../config/ventas.js';
+import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, MINUTOS_COMPLETAR_VENTA_LOCAL, direccionRecogida, puedeTransicionarVenta } from '../config/ventas.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
@@ -922,10 +922,11 @@ export async function adelantarVenta(idVenta) {
       const { rows: ordenes } = await client.query(
         `SELECT estado FROM tb_orden_produccion
           WHERE id_venta = $1 AND tipo = 'Pedido'
-          ORDER BY id_orden_produccion DESC LIMIT 1`,
+            AND estado IS DISTINCT FROM 'Completada'
+          LIMIT 1`,
         [idVenta]
       );
-      if (ordenes[0] && ordenes[0].estado !== 'Completada') {
+      if (ordenes.length) {
         throw new AppError('La cocina aún no termina este pedido', 409);
       }
       const { rows } = await client.query(
@@ -936,14 +937,14 @@ export async function adelantarVenta(idVenta) {
       );
       return rows[0];
     });
-    void notificarEstadoPedido(idVenta);
+    void notificarEstadoPedido(idVenta, 'Completado');
     return venta;
   } catch (error) { throw mapearError(error); }
 }
 
 export async function marcarVentaLista(idVenta) {
   try {
-    const orden = await transaction(async (client) => {
+    const { orden, pedidoListoId } = await transaction(async (client) => {
       const { rows: ventas } = await client.query(
         `SELECT id_venta, estado, venta_local FROM tb_venta WHERE id_venta = $1::int FOR UPDATE`,
         [idVenta],
@@ -964,8 +965,7 @@ export async function marcarVentaLista(idVenta) {
         if (ordenes[0].estado !== 'En proceso') {
           throw new AppError('La orden del pedido no está en proceso.', 409);
         }
-        const resultado = await completarPedidoEnConexion(client, Number(ordenes[0].id_orden_produccion));
-        return resultado.orden;
+        return completarPedidoEnConexion(client, Number(ordenes[0].id_orden_produccion));
       }
       if (!venta.venta_local) throw new AppError('La venta no tiene un pedido en proceso.', 409);
       const { rows: productos } = await client.query(
@@ -984,9 +984,10 @@ export async function marcarVentaLista(idVenta) {
           WHERE id_venta = $1::int`,
         [idVenta, ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO],
       );
-      return null;
+      return { orden: null, pedidoListoId: null };
     });
-    await avanzarAutomaticamente({ notificarVentaId: idVenta });
+    if (!orden) void notificarEstadoPedido(idVenta, 'Completado');
+    await avanzarAutomaticamente({ pedidoListoId });
     const { rows } = await query(
       `SELECT estado, venta_local FROM tb_venta WHERE id_venta = $1::int`,
       [idVenta],
@@ -1019,6 +1020,10 @@ export async function listarVentas({
   if (idUsuario) { params.push(idUsuario); where.push(`c.id_usuario::text = $${params.length}::text`); }
   if (idVenta) { params.push(idVenta); where.push(`v.id_venta = $${params.length}::int`); }
   const filtro = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  // Para el cliente, una orden pendiente tiene prioridad sobre una ya completada.
+  const prioridadOrden = idUsuario
+    ? `(o.estado = 'En proceso') DESC NULLS LAST, (o.estado IS DISTINCT FROM 'Completada') DESC,`
+    : '';
   const { rows } = await query(
     `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
             v.estado, v.fecha_estado, v.venta_local,
@@ -1047,7 +1052,7 @@ export async function listarVentas({
          SELECT o.estado, o.fecha_en_proceso
            FROM tb_orden_produccion o
           WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
-          ORDER BY o.id_orden_produccion DESC
+          ORDER BY ${prioridadOrden} o.id_orden_produccion DESC
           LIMIT 1
        ) op ON TRUE
        LEFT JOIN tb_devolucion d ON d.id_venta = v.id_venta
@@ -1109,6 +1114,10 @@ export async function listarVentas({
       anulado_por: venta.anulado_por,
       motivo_rechazo: venta.motivo_rechazo,
     });
+    if (idUsuario && !venta.venta_local && venta.estado_cliente === ESTADOS_VENTA.POR_ENTREGAR
+      && venta.estado_orden === 'Completada') {
+      venta.direccion_recogida = direccionRecogida();
+    }
     venta.detalles = (detallesPorVenta.get(String(venta.id_venta)) ?? []).map(
       ({ _id_venta: _id, ...detalle }) => detalle
     );

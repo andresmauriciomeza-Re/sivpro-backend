@@ -21,6 +21,7 @@ for (const [minutos, sinLineas] of [[35, false], [0, false], [35, true]]) {
       async query(sql, params = []) {
         const q = sql.replace(/\s+/g, ' ').trim().toLowerCase();
         if (['begin', 'commit', 'rollback'].includes(q)) return { rows: [] };
+        if (q.endsWith('for no key update of v')) return { rows: [] };
         if (q.includes('from tb_orden_produccion op')) return { rows: [{ ...orden }] };
         if (q.includes('from tb_detalle_orden_produccion d')) return { rows: [{ ...linea }] };
         if (q.startsWith('select p.id_producto')) return { rows: [{

@@ -4,7 +4,7 @@ import { enviarEstadoPedido } from './mail.service.js';
 
 /** Reúne los datos del pedido para correo, usando el cliente transaccional
  * cuando se requiera o el pool tras el COMMIT para enviar sin bloquear la operación. */
-export async function datosCorreoPedido(client, idVenta) {
+export async function datosCorreoPedido(client, idVenta, evento) {
   const { rows } = await client.query(
     `SELECT v.id_venta, v.id_cliente, v.estado, v.monto, v.hora_recogida,
             v.motivo_rechazo, v.anulado_por, v.monto_reembolso,
@@ -16,14 +16,29 @@ export async function datosCorreoPedido(client, idVenta) {
          SELECT o.estado
            FROM tb_orden_produccion o
           WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
-          ORDER BY o.id_orden_produccion DESC
+          ORDER BY (o.estado = 'En proceso') DESC NULLS LAST,
+                   (o.estado IS DISTINCT FROM 'Completada') DESC,
+                   o.id_orden_produccion DESC
           LIMIT 1
        ) op ON TRUE
       WHERE v.id_venta = $1`,
     [idVenta],
   );
   const venta = rows[0];
-  if (!venta) return null;
+  if (!venta?.correo?.trim()) return null;
+
+  const estado = evento ?? estadoClientePedido({
+    estadoVenta: venta.estado,
+    estadoOrden: venta.estado_orden,
+    tieneOrden: venta.estado_orden != null,
+    anulado_por: venta.anulado_por,
+    motivo_rechazo: venta.motivo_rechazo,
+  });
+  // Los eventos de producción y cierre se envían desde su transición confirmada.
+  if (!evento && (
+    estado === 'En proceso' || estado === 'Completado'
+    || (estado === 'Por entregar' && venta.estado_orden != null)
+  )) return null;
 
   const { rows: productos } = await client.query(
     `SELECT p.nombre, dv.tamano, dv.cantidad
@@ -33,13 +48,6 @@ export async function datosCorreoPedido(client, idVenta) {
       ORDER BY dv.id_detalle_venta`,
     [idVenta],
   );
-  const estado = estadoClientePedido({
-    estadoVenta: venta.estado,
-    estadoOrden: venta.estado_orden,
-    tieneOrden: venta.estado_orden != null,
-    anulado_por: venta.anulado_por,
-    motivo_rechazo: venta.motivo_rechazo,
-  });
 
   return {
     correo: venta.correo,
@@ -64,9 +72,9 @@ export async function datosCorreoPedido(client, idVenta) {
 
 /** Prepara el correo con datos ya confirmados y nunca deja que una consulta o
  * un fallo SMTP altere la respuesta de la operación que cambió el pedido. */
-export async function notificarEstadoPedido(idVenta) {
+export async function notificarEstadoPedido(idVenta, evento) {
   try {
-    const datos = await datosCorreoPedido({ query }, idVenta);
+    const datos = await datosCorreoPedido({ query }, idVenta, evento);
     if (datos) void enviarEstadoPedido(datos);
   } catch (error) {
     console.error(

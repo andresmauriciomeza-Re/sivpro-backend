@@ -35,9 +35,10 @@ test('agruparFilasPorId conserva las filas y su orden por venta o devolución', 
 });
 
 test('el listado expone venta local y hora de finalización calculada con fecha_estado', async () => {
-  const original = pool.query;
+  const { query: original, connect: conectarOriginal } = pool;
   pool.query = async (sql, params) => {
     const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (['begin', 'commit', 'rollback'].includes(consulta) || consulta.endsWith('for no key update')) return { rows: [] };
     if (consulta.startsWith('with completadas as')) return { rows: [] };
     if (consulta.startsWith('update tb_venta')) return { rows: [], rowCount: 0 };
     if (consulta.startsWith('select id_orden_produccion from tb_orden_produccion')) return { rows: [] };
@@ -57,11 +58,13 @@ test('el listado expone venta local y hora de finalización calculada con fecha_
     if (consulta.includes('from tb_detalle_venta') || consulta.includes('from tb_pagos')) return { rows: [] };
     throw new Error(`Consulta no esperada en prueba: ${consulta}`);
   };
+  pool.connect = async () => ({ query: pool.query, release() {} });
   try {
     const ventas = await listarVentas({ idVenta: 31 });
     assert.equal(ventas[0].venta_local, true);
     assert.equal(ventas[0].hora_completado_local, '00:10');
   } finally {
     pool.query = original;
+    pool.connect = conectarOriginal;
   }
 });

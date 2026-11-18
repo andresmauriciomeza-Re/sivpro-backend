@@ -37,8 +37,6 @@ test('avance completa solo preparación vencida, asigna precio y suma inventario
   const connectOriginal = pool.connect;
   pool.query = async (sql) => {
     const q = sql.replace(/\s+/g, ' ').trim().toLowerCase();
-    if (q.startsWith('with completadas as')) return { rows: [] };
-    if (q.startsWith('update tb_venta')) return { rows: [], rowCount: 0 };
     if (q.startsWith('select id_orden_produccion from tb_orden_produccion')) {
       assert.match(q, /tiempo_preparacion_min > 0/);
       assert.match(q, /fecha_en_proceso \+ tiempo_preparacion_min \* interval '1 minute' <=/);
@@ -50,6 +48,7 @@ test('avance completa solo preparación vencida, asigna precio y suma inventario
     async query(sql, params = []) {
       const q = sql.replace(/\s+/g, ' ').trim().toLowerCase();
       if (['begin', 'commit', 'rollback'].includes(q)) return { rows: [] };
+      if (q.endsWith('for no key update') || q.startsWith('with completadas as') || q.startsWith('update tb_venta')) return { rows: [] };
       if (q.includes('from tb_orden_produccion op')) return { rows: [{ ...orden }] };
       if (q.includes('from tb_detalle_orden_produccion d')) return { rows: lineas };
       if (q.startsWith('select c.nombre from tb_productos')) return { rows: [{ nombre: 'Pizza' }] };
