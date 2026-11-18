@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import AppError from '../src/errors/AppError.js';
-import { crearPreparacionEnTransaccion } from '../src/services/ordenesProduccion.service.js';
+import { pool } from '../src/config/db.js';
+import { actualizarOrdenProduccion, crearPreparacionEnTransaccion } from '../src/services/ordenesProduccion.service.js';
 import {
   validarCompletarOrdenProduccion,
   validarCrearOrdenProduccion,
+  validarEditarOrdenProduccion,
 } from '../src/validators/ordenesProduccion.validator.js';
 
 const ordenPreparacionValida = { lineas: [{ id_producto: 7, cantidad: 3 }] };
@@ -94,4 +96,59 @@ test('la cantidad real de verificación debe ser un entero no negativo', () => {
       (error) => error instanceof AppError && error.statusCode === 400,
     );
   }
+});
+
+
+test('el tiempo editable acepta los límites y rechaza valores inválidos', () => {
+  for (const minutos of [5, 25, 180]) {
+    assert.equal(validarEditarOrdenProduccion({ tiempo_preparacion_min: minutos }).tiempo_preparacion_min, minutos);
+  }
+  for (const minutos of [4, 181, 5.5, null, '25']) {
+    assert.throws(() => validarEditarOrdenProduccion({ tiempo_preparacion_min: minutos }), { statusCode: 400 });
+  }
+});
+
+test('solo el administrador ajusta pedidos activos y serializa el cambio con el cierre', async (t) => {
+  const row = { id_orden_produccion: 17, tipo: 'Pedido', estado: 'Pendiente', tiempo_preparacion_min: null };
+  const operaciones = [];
+  const conectar = pool.connect;
+  t.after(() => { pool.connect = conectar; });
+  pool.connect = async () => ({
+    async query(sql, params) {
+      const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (['begin', 'commit', 'rollback'].includes(consulta)) return { rows: [] };
+      if (consulta.endsWith('for no key update of v')) {
+        operaciones.push('bloquear venta');
+        return { rows: [{ estado: 'Por entregar' }] };
+      }
+      if (consulta.includes('from tb_orden_produccion op')) {
+        if (consulta.endsWith('for update of op')) operaciones.push('bloquear orden');
+        return { rows: [{ ...row }] };
+      }
+      if (consulta.includes('from tb_detalle_orden_produccion')) return { rows: [] };
+      assert.match(consulta, /^update tb_orden_produccion set tiempo_preparacion_min/);
+      assert.match(consulta, /estado = 'en proceso' and fecha_en_proceso \+ \$2::int \* interval '1 minute' <= clock_timestamp\(\)/);
+      assert.match(consulta, /'cierre_manual_por_tiempo'/);
+      assert.doesNotMatch(consulta, /venta_local|set estado/);
+      operaciones.push('guardar minutos');
+      row.tiempo_preparacion_min = params[1];
+      return { rows: [] };
+    },
+    release() {},
+  });
+
+  const ajustar = (tiempo_preparacion_min, esAdministrador) =>
+    actualizarOrdenProduccion(17, { tiempo_preparacion_min }, { esAdministrador });
+  await assert.rejects(ajustar(10, false), { statusCode: 403 });
+  assert.deepEqual(operaciones, []);
+  assert.equal((await ajustar(40, true)).tiempo_preparacion_min, 40);
+  assert.deepEqual(operaciones.splice(0), ['bloquear venta', 'bloquear orden', 'guardar minutos']);
+  row.estado = 'En proceso';
+  assert.equal((await ajustar(5, true)).estado, 'En proceso');
+  assert.deepEqual(operaciones.splice(0), ['bloquear venta', 'bloquear orden', 'guardar minutos']);
+  for (const estado of ['Completada', 'Cancelada']) {
+    row.estado = estado;
+    await assert.rejects(ajustar(10, true), { statusCode: 409 });
+  }
+  assert.equal(row.tiempo_preparacion_min, 5);
 });

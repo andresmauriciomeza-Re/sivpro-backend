@@ -87,14 +87,14 @@ function crearBaseVenta({ stockGrande = 10, producto = {}, productosExtra = [], 
         estado.ordenesInsertadas += 1;
         assert.match(consulta, /productos_descontados/);
         assert.doesNotMatch(consulta, /venta_local/);
-        assert.equal(params.length, 5);
-        assert.match(consulta, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
+        assert.equal(params.length, 6);
+        assert.match(consulta, /'en proceso', true, \$4::timestamp, \$6::int, \$4::timestamp \+ \$6::int \* interval '1 minute', \$5::jsonb/);
         estado.orden = {
           id_orden_produccion: 99,
           estado: 'En proceso',
           productos_descontados: true,
           fecha_en_proceso: params[3],
-          tiempo_preparacion_min: 25,
+          tiempo_preparacion_min: params[5],
           historial: JSON.parse(params[4]),
         };
         return { rows: [{ id_orden_produccion: 99 }] };
@@ -214,6 +214,7 @@ test('venta del panel queda por entregar, verifica el pago y crea OP sin doble d
     horaRecogida: null,
     lineas: [lineaGrande],
     pago: pagoLocal,
+    minutosPreparacion: 45,
   }));
 
   assert.equal(venta.estado, 'Por entregar');
@@ -222,7 +223,7 @@ test('venta del panel queda por entregar, verifica el pago y crea OP sin doble d
   assert.equal(base.estado.producto.stock_partes, 28);
   assert.equal(base.estado.ordenesInsertadas, 1);
   assert.equal(base.estado.orden.estado, 'En proceso');
-  assert.equal(base.estado.orden.tiempo_preparacion_min, 25);
+  assert.equal(base.estado.orden.tiempo_preparacion_min, 45);
   assert.ok(base.estado.orden.fecha_en_proceso);
   assert.deepEqual(base.estado.orden.historial[0], {
     de: null, a: 'En proceso', fechaHora: base.estado.orden.fecha_en_proceso, origen: 'venta_panel',
@@ -283,19 +284,21 @@ test('avance local usa 25 minutos u OP completada, sin aplicar esas reglas a tie
     { id_venta: 6, venta_local: true, minutos: 1, estado: 'Por entregar', opCompletada: true },
     { id_venta: 7, venta_local: false, minutos: 1, estado: 'Por entregar', opCompletada: true },
   ];
-  const original = pool.query;
+  const { query: original, connect: conectarOriginal } = pool;
   pool.query = async (sql, params) => {
     const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (consulta.endsWith('for no key update')) return { rows: ventas };
     if (!consulta.startsWith('update tb_venta')) return { rows: [] };
-    assert.match(consulta, /venta_local = true and \(\s*fecha_estado \+ interval '25 minutes' <= now\(\) at time zone \$2::text\s*or exists \( select 1 from tb_orden_produccion op where op\.id_venta = tb_venta\.id_venta and op\.tipo = 'pedido' and op\.estado = 'completada' \)\s*\)\)/);
+    assert.match(consulta, /venta_local = true and \( \(fecha_estado \+ interval '25 minutes' <= now\(\) at time zone \$2::text and not exists/);
     assert.match(consulta, /venta_local = false and hora_recogida is not null/);
-    assert.match(consulta, /op\.estado = 'completada'/);
+    assert.match(consulta, /op\.estado is distinct from 'completada'/);
     assert.match(consulta, /set estado = \$1::text, fecha_estado = now\(\) at time zone \$2::text/);
-    assert.deepEqual(params, ['Completado', 'America/Bogota', 'Por entregar']);
+    assert.deepEqual(params.slice(0, 3), ['Completado', 'America/Bogota', 'Por entregar']);
     const actualizadas = ventas.filter((venta) => venta.estado === params[2] && venta.venta_local && (venta.minutos >= 25 || venta.opCompletada));
     for (const venta of actualizadas) venta.estado = params[0];
     return { rows: actualizadas.map(({ id_venta }) => ({ id_venta })), rowCount: actualizadas.length };
   };
+  pool.connect = async () => ({ query: pool.query, release() {} });
   try {
     assert.equal(await avanzarVentasCompletadas(), 3);
     assert.deepEqual(ventas.map(({ estado }) => estado), [
@@ -303,6 +306,7 @@ test('avance local usa 25 minutos u OP completada, sin aplicar esas reglas a tie
     ]);
   } finally {
     pool.query = original;
+    pool.connect = conectarOriginal;
   }
 });
 
@@ -678,9 +682,10 @@ test('inicio de pedido sin fecha: local automático; tienda usa recogida futura 
 });
 
 test('listado y detalle de órdenes exponen es_venta_local desde venta o historial', async () => {
-  const queryOriginal = pool.query;
+  const { query: queryOriginal, connect: conectarOriginal } = pool;
   pool.query = async (sql) => {
     const consulta = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (['begin', 'commit', 'rollback'].includes(consulta) || consulta.endsWith('for no key update')) return { rows: [] };
     if (consulta.startsWith('with completadas as') || consulta.startsWith('update tb_venta') || consulta.startsWith("select id_orden_produccion from tb_orden_produccion where tipo = 'preparacion'")) return { rows: [], rowCount: 0 };
     if (consulta.includes('from tb_orden_produccion op')) {
       assert.match(consulta, /coalesce\(v\.venta_local, false\) as es_venta_local/);
@@ -695,6 +700,7 @@ test('listado y detalle de órdenes exponen es_venta_local desde venta o histori
     if (consulta.includes('from tb_detalle_orden_produccion d')) return { rows: [] };
     throw new Error(`Consulta no esperada en prueba: ${consulta}`);
   };
+  pool.connect = async () => ({ query: pool.query, release() {} });
   try {
     const ordenes = await listarOrdenesProduccion({});
     assert.deepEqual(ordenes.map((orden) => orden.es_venta_local), [true, true, false, false]);
@@ -704,6 +710,7 @@ test('listado y detalle de órdenes exponen es_venta_local desde venta o histori
     assert.equal('venta_local' in detalle, false);
   } finally {
     pool.query = queryOriginal;
+    pool.connect = conectarOriginal;
   }
 });
 

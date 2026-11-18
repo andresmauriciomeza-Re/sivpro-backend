@@ -16,7 +16,7 @@ import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
  * con 409 y el detalle de `faltantes` sin tocar nada: el rollback lo hace la
  * transacción de la venta. En ventas del panel el inventario ya fue descontado.
  */
-export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescontado = false } = {}) {
+export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescontado = false, minutosPreparacion = MINUTOS_CALENTAMIENTO_PEDIDO } = {}) {
   const { rows: existentes } = await client.query(
     `SELECT id_orden_produccion FROM tb_orden_produccion
       WHERE id_venta = $1 AND tipo = 'Pedido'
@@ -114,9 +114,9 @@ export async function crearOrdenProduccion(client, idVenta, { inventarioYaDescon
        (tipo, id_venta, fecha_solicitada, hora_solicitada, estado, productos_descontados,
         fecha_en_proceso, tiempo_preparacion_min, fecha_entrega_estimada, historial)
      VALUES ('Pedido', $1::int, $2::date, $3::time, 'En proceso', TRUE,
-             $4::timestamp, ${MINUTOS_CALENTAMIENTO_PEDIDO}, $4::timestamp + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes', $5::jsonb)
+             $4::timestamp, $6::int, $4::timestamp + $6::int * interval '1 minute', $5::jsonb)
      RETURNING id_orden_produccion`,
-    [idVenta, venta.fecha_solicitada, venta.hora_recogida, inicio, JSON.stringify(historial)]
+    [idVenta, venta.fecha_solicitada, venta.hora_recogida, inicio, JSON.stringify(historial), minutosPreparacion]
   );
   const idOrden = Number(ordenRows[0].id_orden_produccion);
 

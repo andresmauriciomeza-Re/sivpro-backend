@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pool } from '../src/config/db.js';
-import { crearVentaCliente, crearVentaPanel, verificarVenta } from '../src/services/ventas.service.js';
+import { confirmarPagoVenta, crearVentaCliente, crearVentaPanel, obtenerResumenPagos, subirComprobanteCliente, verificarVenta } from '../src/services/ventas.service.js';
 import { listarOrdenesProduccion, obtenerOrdenProduccion } from '../src/services/ordenesProduccion.service.js';
 
 test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir venta_local', async () => {
   const ventas = new Map();
   const ordenes = [];
   const detalles = [];
+  const pagos = [];
   const producto = {
     id_producto: 7, id_categoria: 2, nombre: 'Pizza prueba', tipo: 'Elaborado',
     categoria_nombre: 'Pizza', categoria_activa: true, estado: 'Disponible',
@@ -17,7 +18,7 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
   const consulta = async (sql, params = []) => {
     const texto = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     if (['begin', 'commit', 'rollback'].includes(texto) || texto.startsWith('select pg_advisory_xact_lock')) return { rows: [] };
-    if (texto.startsWith('with completadas as') || texto.startsWith('update tb_venta set estado = $1::text')) return { rows: [], rowCount: 0 };
+    if (texto.endsWith('for no key update') || texto.startsWith('with completadas as') || texto.startsWith('update tb_venta set estado = $1::text')) return { rows: [], rowCount: 0 };
     if (texto.startsWith("select id_orden_produccion from tb_orden_produccion where tipo = 'preparacion'")) return { rows: [] };
     if (texto.includes('as es_personal')) return { rows: [{ id_usuario: '10001', es_personal: false }] };
     if (texto.includes('as cliente_estado')) return { rows: [{ id_usuario: '10001', rol: 'Cliente', id_cliente: 5, cliente_estado: true }] };
@@ -36,8 +37,39 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
       detalles.push({ id_venta: params[0], id_producto: params[1], cantidad: params[2], tamano: params[5] });
       return { rows: [] };
     }
-    if (texto.startsWith('insert into tb_pagos')) return { rows: [{ id_pago: 1 }] };
+    if (texto.startsWith('insert into tb_pagos')) {
+      const pago = {
+        id_pago: pagos.length + 1, id_venta: params[0], tipo: params[1],
+        monto_declarado: (params.length === 8 ? params[6] : params[4]) ?? null,
+        monto_confirmado: params[7] ?? null, estado: params[5] ?? 'Pendiente',
+      };
+      pagos.push(pago);
+      return { rows: [pago] };
+    }
+    if (texto.startsWith('select v.monto as total')) {
+      const venta = ventas.get(params[0]);
+      if (!venta || (params[1] !== null && params[1] !== '10001')) return { rows: [] };
+      const pagosVenta = pagos.filter((pago) => pago.id_venta === venta.id_venta);
+      const recibido = pagosVenta.reduce((suma, pago) => suma + (pago.monto_confirmado ?? 0), 0);
+      const en_revision = pagosVenta.reduce((suma, pago) => suma + (pago.monto_confirmado === null ? pago.monto_declarado ?? 0 : 0), 0);
+      return { rows: [{
+        total: venta.monto, recibido, en_revision, pagos: pagosVenta,
+        falta: Math.max(0, venta.monto - recibido), saldo_a_favor: Math.max(0, recibido - venta.monto),
+      }] };
+    }
+    if (texto.startsWith('select estado from tb_venta') || texto.startsWith('select v.id_venta, v.monto, v.estado')) {
+      return { rows: ventas.has(params[0]) ? [ventas.get(params[0])] : [] };
+    }
     if (texto.startsWith('select v.id_venta, v.id_cliente, v.fecha')) return { rows: [ventas.get(params[0])] };
+    if (texto.startsWith('select monto_confirmado, estado from tb_pagos')) {
+      return { rows: pagos.filter((pago) => pago.id_venta === params[0] && pago.id_pago === params[1]) };
+    }
+    if (texto.startsWith('update tb_pagos set monto_confirmado')) {
+      const pago = pagos.find((pago) => pago.id_venta === params[0] && pago.id_pago === params[1]);
+      pago.monto_confirmado = params[2];
+      pago.estado = 'Verificado';
+      return { rows: [] };
+    }
     if (texto.startsWith('update tb_pagos')) return { rows: [] };
     if (texto.startsWith('select id_orden_produccion from tb_orden_produccion')) {
       return { rows: ordenes.filter((orden) => orden.id_venta === params[0]) };
@@ -51,11 +83,12 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
     }
     if (texto.startsWith('insert into tb_orden_produccion')) {
       assert.doesNotMatch(texto, /\bventa_local\b/);
-      assert.equal(params.length, 5);
-      assert.match(texto, /'en proceso', true, \$4::timestamp, 25, \$4::timestamp \+ interval '25 minutes', \$5::jsonb/);
+      assert.equal(params.length, 6);
+      assert.equal(params[5], 25);
+      assert.match(texto, /'en proceso', true, \$4::timestamp, \$6::int, \$4::timestamp \+ \$6::int \* interval '1 minute', \$5::jsonb/);
       const orden = {
         id_orden_produccion: ordenes.length + 1, id_venta: params[0], tipo: 'Pedido',
-        estado: 'En proceso', fecha_en_proceso: params[3], tiempo_preparacion_min: 25,
+        estado: 'En proceso', fecha_en_proceso: params[3], tiempo_preparacion_min: params[5],
         historial: JSON.parse(params[4]), insumos_requeridos: [],
       };
       ordenes.push(orden);
@@ -67,7 +100,7 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
       return { rows: [{ id_producto: 7, stock: producto.stock_partes }] };
     }
     if (texto.startsWith('update tb_venta set estado')) {
-      const venta = ventas.get(params[4]);
+      const venta = ventas.get(params.at(-1));
       venta.estado = params[0];
       return { rows: [venta] };
     }
@@ -97,8 +130,25 @@ test('ventas consecutivas del panel y pedidos de tienda crean OP sin escribir ve
       assert.equal(venta.venta_local, true);
     }
     for (let i = 0; i < 2; i++) {
-      const venta = await crearVentaCliente('10001', { horaRecogida: null, lineas: [linea], pago: { tipo: 'Nequi', comprobante: 'comprobante' } });
+      const venta = await crearVentaCliente('10001', { horaRecogida: null, lineas: [linea], pago: { tipo: 'Nequi', comprobante: 'comprobante', montoDeclarado: 400 } });
       assert.equal(venta.venta_local, false);
+      await assert.rejects(obtenerResumenPagos(venta.id_venta, 'otro'), { statusCode: 404 });
+      assert.equal((await obtenerResumenPagos(venta.id_venta, '10001')).en_revision, 400);
+      await assert.rejects(verificarVenta(venta.id_venta, { accion: 'aceptar' }), { statusCode: 409 });
+      const parcial = await confirmarPagoVenta(venta.id_venta, venta.pagos[0].id_pago, 400);
+      assert.equal(parcial.falta, 600);
+      assert.equal(parcial.en_revision, 0);
+      await assert.rejects(confirmarPagoVenta(venta.id_venta, venta.pagos[0].id_pago, 400), { statusCode: 409 });
+      await verificarVenta(venta.id_venta, { accion: 'monto_faltante' });
+      assert.equal((await verificarVenta(venta.id_venta, { accion: 'monto_faltante' })).estado, 'En espera');
+      const carga = await subirComprobanteCliente('10001', venta.id_venta, { tipo: 'Nequi', comprobante: 'segundo' });
+      assert.equal(carga.estado, 'Por verificar');
+      const resumen = await confirmarPagoVenta(venta.id_venta, carga.id_pago, 650);
+      assert.equal(resumen.pagos.at(-1).monto_declarado, null);
+      assert.equal(resumen.recibido, 1050);
+      assert.equal(resumen.falta, 0);
+      assert.equal(resumen.saldo_a_favor, 50);
+      await assert.rejects(verificarVenta(venta.id_venta, { accion: 'monto_faltante' }), { statusCode: 409 });
       const resultado = await verificarVenta(venta.id_venta, { accion: 'aceptar' });
       assert.equal(resultado.estado, 'Por entregar');
     }

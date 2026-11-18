@@ -11,8 +11,8 @@ const COLUMNAS_INSUMO = `
   c.nombre AS categoria_nombre`;
 
 const COLUMNAS_FICHA = `
-  ft.id_ft, ft.id_producto, ft.id_insumo, ft.version, ft.fecha_inicio,
-  ft.fecha_final, ft.cantidad, ft.medida, ft.porciones,
+  ft.id_ft, ft.id_producto, ft.id_insumo, ft.version,
+  to_char(ft.fecha_inicio, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_inicio, to_char(ft.fecha_final, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_final, ft.cantidad, ft.medida, ft.porciones,
   ft.tiempo_preparacion, ft.pasos, ft.total`;
 
 function mapearError(error, { nombre, eliminando = false } = {}) {

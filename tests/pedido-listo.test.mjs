@@ -29,6 +29,18 @@ async function conBase({ local = true, estadoOrden = 'En proceso', estadoVenta =
       const texto = sql.replace(/\s+/g, ' ').trim().toLowerCase();
       consultas.push(texto);
       if (['begin', 'commit', 'rollback'].includes(texto)) return { rows: [] };
+      if (texto.endsWith('for no key update of v')) return { rows: [{ estado: venta.estado }] };
+      if (texto.endsWith('for no key update')) return { rows: [{ id_venta: 31 }] };
+      if (texto.startsWith('select not exists')) return { rows: [{ todas_completadas: true }] };
+      if (texto.startsWith('with completadas as')) return { rows: [] };
+      if (texto.startsWith('select id_venta from tb_venta')) {
+        return { rows: !local && venta.estado === 'Por entregar' && orden?.estado === 'Completada' ? [venta] : [] };
+      }
+      if (texto.startsWith('update tb_venta set estado = $1::text')) {
+        const debeCompletar = venta.estado === 'Por entregar' && orden?.estado === 'Completada' && (local || recogidaPasada);
+        if (debeCompletar) venta.estado = 'Completado';
+        return { rows: debeCompletar ? [venta] : [] };
+      }
       if (texto.startsWith('select id_venta, estado, venta_local from tb_venta')) return { rows: [{ ...venta }] };
       if (texto.startsWith('select id_orden_produccion, estado from tb_orden_produccion')) return { rows: orden ? [{ ...orden }] : [] };
       if (texto.includes('from tb_orden_produccion op')) return { rows: orden ? [{ ...orden }] : [] };
@@ -59,12 +71,6 @@ async function conBase({ local = true, estadoOrden = 'En proceso', estadoVenta =
   pool.query = async (sql) => {
     const texto = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     consultas.push(texto);
-    if (texto.startsWith('with completadas as')) return { rows: [] };
-    if (texto.startsWith('update tb_venta')) {
-      const debeCompletar = venta.estado === 'Por entregar' && orden?.estado === 'Completada' && (local || recogidaPasada);
-      if (debeCompletar) venta.estado = 'Completado';
-      return { rows: debeCompletar ? [{ id_venta: 31 }] : [], rowCount: debeCompletar ? 1 : 0 };
-    }
     if (texto.startsWith('select id_orden_produccion from tb_orden_produccion')) return { rows: [] };
     if (texto.startsWith('select estado from tb_venta')) return { rows: [{ estado: venta.estado }] };
     if (texto.includes('u.correo, op.estado as estado_orden')) {

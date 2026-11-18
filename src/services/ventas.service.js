@@ -6,7 +6,7 @@ const normalizarNombre = (valor) => {
     .map((palabra, indice) => indice > 0 && excepciones.has(palabra) ? palabra : palabra.charAt(0).toLocaleUpperCase('es') + palabra.slice(1)).join(' ');
 };
 import { query, transaction } from '../config/db.js';
-import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, MINUTOS_COMPLETAR_VENTA_LOCAL, puedeTransicionarVenta } from '../config/ventas.js';
+import { ZONA_HORARIA_NEGOCIO, ESTADOS_VENTA, SEGUNDOS_ANULACION, MINUTOS_PREPARACION_PANEL, MINUTOS_COMPLETAR_VENTA_LOCAL, direccionRecogida, puedeTransicionarVenta } from '../config/ventas.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { contratoVigenteSql } from '../utils/contratacion.js';
 import { enviarAvisoMontoFaltante } from './mail.service.js';
@@ -15,7 +15,7 @@ import { estadoClientePedido } from '../utils/estadoPedidoCliente.js';
 import { crearOrdenProduccion, cancelarOrdenProduccionDeVenta } from './ordenProduccion.service.js';
 import { validarMotivoRechazo, validarMotivoAnulacion, validarResolverDevolucion } from '../validators/ventas.validator.js';
 import { avanzarAutomaticamente } from './avanceAutomatico.service.js';
-import { MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { finPedidoSql, MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
 import { partesPizza, errorStockPizza } from '../utils/stockPizza.js';
 import { completarPedidoEnConexion } from './ordenesProduccion.service.js';
 
@@ -283,7 +283,7 @@ function mapearError(error) {
   return new AppError('No se pudo completar la operación de ventas.', 503);
 }
 
-async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago, ventaPanel = false }) {
+async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas, pago, ventaPanel = false, minutosPreparacion = MINUTOS_CALENTAMIENTO_PEDIDO }) {
   // El panel registra una venta de producto listo para entrega inmediata. La
   // tienda conserva la hora automática de preparación cuando no viene una.
   const momento = horaRecogida ? validarFechaRecogida(horaRecogida) : fechaHoraBogota();
@@ -291,14 +291,17 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
     ? momento.timestamp.slice(11, 19)
     : horaAutoPreparacion());
   const productosCalculados = await cargarProductosParaVenta(client, lineas);
+  const requiereProduccion = ventaPanel && productosCalculados.some((linea) => linea.producto.tipo === 'Elaborado');
   const total = productosCalculados.reduce((suma, linea) => suma + linea.subtotal, 0);
   if (!Number.isFinite(total) || total < 0) throw new AppError('El total calculado no es válido.', 400);
   const venta = await client.query(
     `INSERT INTO tb_venta (id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local)
      VALUES ($1::int, $2::timestamp, $3::time, $4::numeric, $5::text, $2::timestamp, $6::boolean)
-     RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, venta_local,
-               to_char(fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local`,
-    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel]
+     RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, venta_local,
+               to_char(fecha_estado + $7::int * interval '1 minute', 'HH24:MI') AS hora_completado_local`,
+    [idCliente, momento.timestamp, horaFinal, total, ventaPanel ? ESTADOS_VENTA.POR_ENTREGAR : ESTADOS_VENTA.POR_VERIFICAR, ventaPanel,
+      requiereProduccion ? minutosPreparacion : MINUTOS_COMPLETAR_VENTA_LOCAL]
   );
   const idVenta = venta.rows[0].id_venta;
   for (const linea of productosCalculados) {
@@ -309,20 +312,32 @@ async function crearVentaEnTransaccion({ client, idCliente, horaRecogida, lineas
       [idVenta, linea.idProducto, linea.cantidad, linea.precio, linea.subtotal, linea.tamano]
     );
   }
-  const montoPagadoInicial = total;
+  const montoPagadoInicial = ventaPanel ? total : 0;
   const pagoInsertado = await client.query(
     `INSERT INTO tb_pagos
-       (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado)
-     VALUES ($1, $2, $3, $4, $5, 0, $6) RETURNING id_pago`,
-    [idVenta, pago.tipo, pago.comprobante, total, montoPagadoInicial, ventaPanel ? 'Verificado' : 'Pendiente']
+       (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado,
+        monto_declarado, monto_confirmado)
+     VALUES ($1, $2, $3, $4, $5, $4::numeric - $5::numeric, $6, $7, $8) RETURNING id_pago`,
+    [idVenta, pago.tipo, pago.comprobante, total, montoPagadoInicial, ventaPanel ? 'Verificado' : 'Pendiente',
+      pago.montoDeclarado ?? null, montoPagadoInicial > 0 && Number.isSafeInteger(montoPagadoInicial) ? montoPagadoInicial : null]
   );
   if (ventaPanel) {
     await descontarInventarioVentaPanel(client, productosCalculados);
-    if (productosCalculados.some((linea) => linea.producto.tipo === 'Elaborado')) {
-      await crearOrdenProduccion(client, idVenta, { inventarioYaDescontado: true });
+    if (requiereProduccion) {
+      await crearOrdenProduccion(client, idVenta, { inventarioYaDescontado: true, minutosPreparacion });
     }
   }
-  return { ...venta.rows[0], id_venta: Number(idVenta), pagos: [{ id_pago: Number(pagoInsertado.rows[0].id_pago), ...pago, depositado: montoPagadoInicial }] };
+  return {
+    ...venta.rows[0],
+    id_venta: Number(idVenta),
+    pagos: [{
+      id_pago: Number(pagoInsertado.rows[0].id_pago),
+      tipo: pago.tipo,
+      comprobante: pago.comprobante,
+      depositado: montoPagadoInicial,
+      monto_declarado: pago.montoDeclarado ?? null,
+    }],
+  };
 }
 
 export async function crearVentaCliente(idUsuario, entrada) {
@@ -347,6 +362,78 @@ export async function crearVentaPanel(datosCliente, entrada) {
   } catch (error) { throw mapearError(error); }
 }
 
+async function consultarResumenPagos(consultar, idVenta, titular) {
+  const { rows } = await consultar(
+    `SELECT v.monto AS total, p.recibido, p.en_revision,
+            greatest(v.monto - p.recibido, 0) AS falta,
+            greatest(p.recibido - v.monto, 0) AS saldo_a_favor, p.pagos
+       FROM tb_venta v
+       CROSS JOIN LATERAL (
+         SELECT coalesce(sum(monto_confirmado), 0) AS recibido,
+                coalesce(sum(monto_declarado) FILTER (WHERE monto_confirmado IS NULL), 0) AS en_revision,
+                coalesce(json_agg(
+                  json_build_object('id_pago', id_pago, 'id_venta', id_venta, 'tipo', tipo,
+                    'comprobante', comprobante, 'fecha', to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 'estado', estado,
+                    'monto_declarado', monto_declarado, 'monto_confirmado', monto_confirmado)
+                  ORDER BY id_pago), '[]'::json) AS pagos
+           FROM tb_pagos WHERE id_venta = v.id_venta
+       ) p
+      WHERE v.id_venta = $1
+        AND ($2::text IS NULL OR EXISTS (
+          SELECT 1 FROM tb_cliente c
+           WHERE c.id_cliente = v.id_cliente AND c.id_usuario::text = $2
+        ))`,
+    [idVenta, titular ?? null]
+  );
+  const resumen = rows[0];
+  if (!resumen) throw new AppError('Venta no encontrada.', 404);
+  return {
+    total: Number(resumen.total),
+    recibido: Number(resumen.recibido),
+    en_revision: Number(resumen.en_revision),
+    falta: Number(resumen.falta),
+    saldo_a_favor: Number(resumen.saldo_a_favor),
+    pagos: resumen.pagos,
+  };
+}
+
+export function obtenerResumenPagos(idVenta, titular) {
+  return consultarResumenPagos(query, idVenta, titular);
+}
+
+export async function confirmarPagoVenta(idVenta, idPago, montoConfirmado) {
+  try {
+    return await transaction(async (client) => {
+      const { rows: [venta] } = await client.query(
+        'SELECT estado FROM tb_venta WHERE id_venta = $1 FOR UPDATE',
+        [idVenta]
+      );
+      if (!venta) throw new AppError('Venta no encontrada.', 404);
+      if (![ESTADOS_VENTA.POR_VERIFICAR, ESTADOS_VENTA.EN_ESPERA].includes(venta.estado)) {
+        throw new AppError('Solo puedes confirmar pagos de ventas Por verificar o En espera.', 409);
+      }
+      const { rows: [pago] } = await client.query(
+        'SELECT monto_confirmado, estado FROM tb_pagos WHERE id_venta = $1 AND id_pago = $2',
+        [idVenta, idPago]
+      );
+      if (!pago) throw new AppError('Pago no encontrado en esta venta.', 404);
+      if (pago.estado === 'Rechazado') throw new AppError('El pago está rechazado.', 409);
+      if (pago.monto_confirmado !== null) throw new AppError('Este pago ya está confirmado.', 409);
+      await client.query(
+        `UPDATE tb_pagos SET monto_confirmado = $3, depositado = $4, estado = 'Verificado'
+          WHERE id_venta = $1 AND id_pago = $2`,
+        [idVenta, idPago, montoConfirmado, montoConfirmado]
+      );
+      const resumen = await consultarResumenPagos(client.query.bind(client), idVenta);
+      await client.query(
+        'UPDATE tb_pagos SET faltante = $2 WHERE id_pago = $1',
+        [resumen.pagos.at(-1).id_pago, resumen.falta]
+      );
+      return resumen;
+    });
+  } catch (error) { throw mapearError(error); }
+}
+
 export async function verificarVenta(idVenta, datos) {
   let emailPendiente = null;
   try {
@@ -366,48 +453,38 @@ export async function verificarVenta(idVenta, datos) {
       const accion = datos.accion;
       const hacia = accion === 'aceptar' ? ESTADOS_VENTA.POR_ENTREGAR
         : accion === 'monto_faltante' ? ESTADOS_VENTA.EN_ESPERA : ESTADOS_VENTA.ANULADO;
-      if (!puedeTransicionarVenta(venta.estado, hacia)) {
+      const reenviarAviso = accion === 'monto_faltante' && venta.estado === ESTADOS_VENTA.EN_ESPERA;
+      if (!reenviarAviso && !puedeTransicionarVenta(venta.estado, hacia)) {
         throw new AppError(`Transición no permitida: ${venta.estado} → ${hacia}.`, 409);
       }
       let ordenId = null;
       let motivoRechazo = null;
       let anuladoPor = null;
       if (accion === 'aceptar') {
+        const { falta } = await consultarResumenPagos(client.query.bind(client), idVenta);
+        if (falta > 0) throw new AppError(`No puedes aceptar la venta. Faltan ${falta} pesos por recibir.`, 409);
         await client.query(
-          `UPDATE tb_pagos SET estado = 'Verificado', faltante = 0 WHERE id_venta = $1`,
+          'UPDATE tb_pagos SET faltante = 0 WHERE id_venta = $1',
           [idVenta]
         );
         ordenId = await crearOrdenProduccion(client, idVenta);
       } else if (accion === 'monto_faltante') {
-        const pagado = Number(datos.pagado);
-        const total = Number(venta.monto);
-        if (pagado >= total) throw new AppError('El monto pagado debe ser menor al total; acepta la venta si está completo.', 400);
-        const faltante = total - pagado;
-        const { rows: pagos } = await client.query(
-          `SELECT id_pago, depositado, tipo FROM tb_pagos WHERE id_venta = $1 ORDER BY id_pago DESC FOR UPDATE`,
-          [idVenta]
-        );
-        if (!pagos.length) throw new AppError('La venta no tiene pagos registrados.', 409);
-        const otrosDepositados = pagos.slice(1).reduce((suma, p) => suma + Number(p.depositado), 0);
-        if (pagado < otrosDepositados) {
-          throw new AppError('El monto pagado no puede ser inferior a pagos previamente registrados.', 400);
+        const { total, recibido, falta, pagos } = await consultarResumenPagos(client.query.bind(client), idVenta);
+        if (falta === 0) throw new AppError('No puedes pedir dinero faltante. La venta ya está pagada.', 409);
+        const ultimoPago = pagos.at(-1);
+        if (ultimoPago) {
+          await client.query('UPDATE tb_pagos SET faltante = $2 WHERE id_pago = $1', [ultimoPago.id_pago, falta]);
         }
-        const depositoActual = Math.max(0, pagado - otrosDepositados);
-        await client.query(
-          `UPDATE tb_pagos SET cantidad_pagar = $1, depositado = $2, faltante = $3, estado = 'Pendiente'
-            WHERE id_pago = $4`,
-          [total, depositoActual, faltante, pagos[0].id_pago]
-        );
         emailPendiente = {
           correo: venta.correo,
           nombre: venta.nombre,
           id: Number(venta.id_venta),
           total,
-          pagado,
-          faltante,
+          pagado: recibido,
+          faltante: falta,
           // Medio con el que pagó el cliente: el QR del correo codifica esa
           // misma cuenta (fallback Nequi si no quedó registrado).
-          tipo: pagos[0].tipo,
+          tipo: ultimoPago?.tipo,
         };
       } else {
         // Rechazo: motivo obligatorio (lista válida o "Otro: <texto>"), pagos
@@ -419,7 +496,8 @@ export async function verificarVenta(idVenta, datos) {
       const { rows: actualizadas } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4
           WHERE id_venta = $5
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado, motivo_rechazo, anulado_por`,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, motivo_rechazo, anulado_por`,
         [hacia, fechaHoraBogota().timestamp, motivoRechazo, anuladoPor, idVenta]
       );
       return { ...actualizadas[0], id_orden_produccion: ordenId };
@@ -540,7 +618,8 @@ export async function anularVenta(idVenta, datos) {
             SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4,
                 monto_reembolso = $5, comprobante_anulacion = $6
           WHERE id_venta = $7
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado,
                     motivo_rechazo, anulado_por, monto_reembolso, comprobante_anulacion`,
         [
           ESTADOS_VENTA.ANULADO,
@@ -607,7 +686,8 @@ export async function cancelarVentaCliente(idVenta, idUsuario) {
             SET estado = $1, fecha_estado = $2, motivo_rechazo = $3, anulado_por = $4,
                 monto_reembolso = $5, comprobante_anulacion = NULL
           WHERE id_venta = $6
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado,
                     motivo_rechazo, anulado_por, monto_reembolso`,
         [
           ESTADOS_VENTA.ANULADO,
@@ -664,7 +744,8 @@ export async function marcarDevolucion(idVenta) {
       const { rows: actualizada } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2
           WHERE id_venta = $3
-          RETURNING id_venta, id_cliente, fecha, hora_recogida, monto, estado, fecha_estado`,
+          RETURNING id_venta, id_cliente, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, hora_recogida, monto, estado,
+               to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado`,
         [ESTADOS_VENTA.DEVOLUCION, fechaHoraBogota().timestamp, idVenta]
       );
       return { ...actualizada[0], id_devolucion: idDevolucion };
@@ -836,9 +917,9 @@ export async function resolverDevolucion(idDevolucion, datos) {
         // cubierto, para que la venta no aparezca exigiendo verificación.
         await client.query(
           `INSERT INTO tb_pagos
-             (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado)
-           VALUES ($1, 'Efectivo', NULL, $2, $2, 0, 'Verificado')`,
-          [idVentaReemplazo, totalCanje]
+             (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado, monto_confirmado)
+           VALUES ($1, 'Efectivo', NULL, $2, $2, 0, 'Verificado', $3)`,
+          [idVentaReemplazo, totalCanje, totalCanje > 0 && Number.isSafeInteger(totalCanje) ? totalCanje : null]
         );
         // Su orden de producción: el canje entra a cocina como cualquier pedido.
         ordenReemplazo = await crearOrdenProduccion(client, idVentaReemplazo);
@@ -880,28 +961,25 @@ export async function subirComprobanteCliente(idUsuario, idVenta, datos) {
       );
       const venta = rows[0];
       if (!venta) throw new AppError('Venta no encontrada.', 404);
-      if (!puedeTransicionarVenta(venta.estado, ESTADOS_VENTA.POR_VERIFICAR)) {
+      if (venta.estado !== ESTADOS_VENTA.EN_ESPERA) {
         throw new AppError('Solo puedes subir un comprobante cuando el pedido está En espera.', 409);
       }
-      const { rows: pagos } = await client.query(
-        `SELECT faltante FROM tb_pagos WHERE id_venta = $1 ORDER BY id_pago DESC LIMIT 1 FOR UPDATE`,
-        [idVenta]
-      );
-      const saldoAnterior = Number(pagos[0]?.faltante ?? 0);
-      if (saldoAnterior <= 0) throw new AppError('La venta no tiene un saldo pendiente registrado.', 409);
-      await client.query(
+      const { falta } = await consultarResumenPagos(client.query.bind(client), idVenta);
+      if (falta === 0) throw new AppError('No puedes subir más comprobantes. La venta ya está pagada.', 409);
+      const { rows: [pago] } = await client.query(
         `INSERT INTO tb_pagos
-           (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado)
-         VALUES ($1, $2, $3, $4, $4, 0, 'Pendiente')`,
-        [idVenta, datos.tipo, datos.comprobante, saldoAnterior]
+           (id_venta, tipo, comprobante, cantidad_pagar, depositado, faltante, estado, monto_declarado)
+         VALUES ($1, $2, $3, $4, 0, $4, 'Pendiente', $5)
+         RETURNING id_pago`,
+        [idVenta, datos.tipo, datos.comprobante, falta, datos.montoDeclarado ?? null]
       );
       const { rows: actualizada } = await client.query(
         `UPDATE tb_venta SET estado = $1, fecha_estado = $2, motivo_rechazo = NULL, anulado_por = NULL
           WHERE id_venta = $3
-          RETURNING id_venta, estado, fecha_estado, monto`,
+          RETURNING id_venta, estado, to_char(fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, monto`,
         [ESTADOS_VENTA.POR_VERIFICAR, fechaHoraBogota().timestamp, idVenta]
       );
-      return actualizada[0];
+      return { ...actualizada[0], id_pago: Number(pago.id_pago) };
     });
   } catch (error) { throw mapearError(error); }
 }
@@ -922,10 +1000,11 @@ export async function adelantarVenta(idVenta) {
       const { rows: ordenes } = await client.query(
         `SELECT estado FROM tb_orden_produccion
           WHERE id_venta = $1 AND tipo = 'Pedido'
-          ORDER BY id_orden_produccion DESC LIMIT 1`,
+            AND estado IS DISTINCT FROM 'Completada'
+          LIMIT 1`,
         [idVenta]
       );
-      if (ordenes[0] && ordenes[0].estado !== 'Completada') {
+      if (ordenes.length) {
         throw new AppError('La cocina aún no termina este pedido', 409);
       }
       const { rows } = await client.query(
@@ -936,14 +1015,14 @@ export async function adelantarVenta(idVenta) {
       );
       return rows[0];
     });
-    void notificarEstadoPedido(idVenta);
+    void notificarEstadoPedido(idVenta, 'Completado');
     return venta;
   } catch (error) { throw mapearError(error); }
 }
 
 export async function marcarVentaLista(idVenta) {
   try {
-    const orden = await transaction(async (client) => {
+    const { orden, pedidoListoId } = await transaction(async (client) => {
       const { rows: ventas } = await client.query(
         `SELECT id_venta, estado, venta_local FROM tb_venta WHERE id_venta = $1::int FOR UPDATE`,
         [idVenta],
@@ -964,8 +1043,7 @@ export async function marcarVentaLista(idVenta) {
         if (ordenes[0].estado !== 'En proceso') {
           throw new AppError('La orden del pedido no está en proceso.', 409);
         }
-        const resultado = await completarPedidoEnConexion(client, Number(ordenes[0].id_orden_produccion));
-        return resultado.orden;
+        return completarPedidoEnConexion(client, Number(ordenes[0].id_orden_produccion));
       }
       if (!venta.venta_local) throw new AppError('La venta no tiene un pedido en proceso.', 409);
       const { rows: productos } = await client.query(
@@ -984,9 +1062,10 @@ export async function marcarVentaLista(idVenta) {
           WHERE id_venta = $1::int`,
         [idVenta, ESTADOS_VENTA.COMPLETADO, ZONA_HORARIA_NEGOCIO],
       );
-      return null;
+      return { orden: null, pedidoListoId: null };
     });
-    await avanzarAutomaticamente({ notificarVentaId: idVenta });
+    if (!orden) void notificarEstadoPedido(idVenta, 'Completado');
+    await avanzarAutomaticamente({ pedidoListoId });
     const { rows } = await query(
       `SELECT estado, venta_local FROM tb_venta WHERE id_venta = $1::int`,
       [idVenta],
@@ -1019,17 +1098,25 @@ export async function listarVentas({
   if (idUsuario) { params.push(idUsuario); where.push(`c.id_usuario::text = $${params.length}::text`); }
   if (idVenta) { params.push(idVenta); where.push(`v.id_venta = $${params.length}::int`); }
   const filtro = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  // Para el cliente, una orden pendiente tiene prioridad sobre una ya completada.
+  const prioridadOrden = idUsuario
+    ? `(o.estado = 'En proceso') DESC NULLS LAST, (o.estado IS DISTINCT FROM 'Completada') DESC,`
+    : '';
   const { rows } = await query(
-    `SELECT v.id_venta, v.id_cliente, v.fecha, v.hora_recogida, v.monto,
-            v.estado, v.fecha_estado, v.venta_local,
+    `SELECT v.id_venta, v.id_cliente, to_char(v.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha, v.hora_recogida, v.monto,
+            v.estado, to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_estado, v.venta_local,
             to_char(v.fecha_estado, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_estado_local,
-            to_char(v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes', 'HH24:MI') AS hora_completado_local,
-            CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
-            EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
+            to_char(CASE WHEN op.estado <> 'Cancelada' THEN ${finPedidoSql('op')}
+                         ELSE v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' END, 'HH24:MI') AS hora_completado_local,
+            CASE WHEN v.venta_local THEN EXTRACT(EPOCH FROM ((
+              CASE WHEN op.estado <> 'Cancelada' THEN ${finPedidoSql('op')}
+                   ELSE v.fecha_estado + interval '${MINUTOS_COMPLETAR_VENTA_LOCAL} minutes' END
+            ) AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_venta_local_ms,
+            EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 AS fin_calentamiento_ms,
             v.motivo_rechazo,
             v.anulado_por, v.monto_reembolso, v.comprobante_anulacion,
             op.estado AS estado_orden,
-            d.id_devolucion, d.fecha AS devolucion_fecha,
+            d.id_devolucion, to_char(d.fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS devolucion_fecha,
             d.estado AS devolucion_estado, d.tipo AS devolucion_tipo,
             d.monto AS devolucion_monto, d.nota AS devolucion_nota,
             d.metodo_reembolso,
@@ -1044,10 +1131,10 @@ export async function listarVentas({
        JOIN tb_cliente c ON c.id_cliente = v.id_cliente
        JOIN tb_usuarios u ON u.id_usuario = c.id_usuario
        LEFT JOIN LATERAL (
-         SELECT o.estado, o.fecha_en_proceso
+         SELECT o.estado, o.fecha_en_proceso, o.tiempo_preparacion_min
            FROM tb_orden_produccion o
           WHERE o.id_venta = v.id_venta AND o.tipo = 'Pedido'
-          ORDER BY o.id_orden_produccion DESC
+          ORDER BY ${prioridadOrden} o.id_orden_produccion DESC
           LIMIT 1
        ) op ON TRUE
        LEFT JOIN tb_devolucion d ON d.id_venta = v.id_venta
@@ -1069,7 +1156,7 @@ export async function listarVentas({
       [idsVentas]
     ),
     query(
-      `SELECT id_venta AS _id_venta, id_pago, tipo, fecha,
+      `SELECT id_venta AS _id_venta, id_pago, tipo, to_char(fecha, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha,
               ${incluirComprobantes ? 'comprobante,' : ''}
               (comprobante IS NOT NULL) AS tiene_comprobante,
               cantidad_pagar, depositado, faltante, estado
@@ -1109,6 +1196,10 @@ export async function listarVentas({
       anulado_por: venta.anulado_por,
       motivo_rechazo: venta.motivo_rechazo,
     });
+    if (idUsuario && !venta.venta_local && venta.estado_cliente === ESTADOS_VENTA.POR_ENTREGAR
+      && venta.estado_orden === 'Completada') {
+      venta.direccion_recogida = direccionRecogida();
+    }
     venta.detalles = (detallesPorVenta.get(String(venta.id_venta)) ?? []).map(
       ({ _id_venta: _id, ...detalle }) => detalle
     );

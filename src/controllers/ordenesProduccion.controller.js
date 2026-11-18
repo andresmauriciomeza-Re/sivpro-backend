@@ -74,7 +74,8 @@ export async function actualizarOrdenProduccionController(req, res, next) {
   try {
     res.json(await actualizarOrdenProduccion(
       validarIdOrdenProduccion(req.params.id),
-      validarEditarOrdenProduccion(req.body)
+      validarEditarOrdenProduccion(req.body),
+      { esAdministrador: req.usuario.rol?.trim().toLowerCase() === 'administrador' },
     ));
   } catch (error) {
     responderConFaltantes(error, res, next);

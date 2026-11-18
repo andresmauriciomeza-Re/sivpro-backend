@@ -3,7 +3,7 @@ import { query } from '../config/db.js';
 
 const COLUMNAS = `
   id_parametro, mano_obra_hora, tarifa_gas_m3, consumo_gas_m3_hora,
-  margen_ganancia, fecha_actualizacion`;
+  margen_ganancia, to_char(fecha_actualizacion, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_actualizacion`;
 
 function mapearParametros(row) {
   if (!row) throw new AppError('No se encontraron los parámetros de costos.', 503);

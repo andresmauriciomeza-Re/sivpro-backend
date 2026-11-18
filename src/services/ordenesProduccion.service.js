@@ -4,7 +4,7 @@ import { calcularRequeridosProduccion, fechaHoraBogota } from '../utils/producci
 import { validarFechaLimitePedido } from '../utils/fechaLimitePedido.js';
 import { validarInsumosActivos } from '../utils/validarInsumosActivos.js';
 import { notificarEstadoPedido } from './pedidoEmail.service.js';
-import { PORCIONES_TAMANO, MINUTOS_CALENTAMIENTO_PEDIDO } from '../config/produccion.js';
+import { PORCIONES_TAMANO, MINUTOS_CALENTAMIENTO_PEDIDO, minutosValidosPedido, finPedidoSql, cierreManualPedidoSql } from '../config/produccion.js';
 import normalizarCategoria from '../utils/normalizarCategoria.js';
 import { validarTamanoPizzaPreparacion } from '../validators/ordenesProduccion.validator.js';
 import { validarGrandeMayorQueMediana } from '../validators/productos.validator.js';
@@ -132,11 +132,21 @@ async function cargarLineasOrden(client, idOrden) {
   return rows.map(mapearLinea);
 }
 
+const COLUMNAS_ORDEN = `
+  op.id_orden_produccion, op.tipo, op.id_venta, to_char(op.fecha_solicitada, 'YYYY-MM-DD') AS fecha_solicitada,
+  op.hora_solicitada, op.estado, op.observacion, to_char(op.fecha_creacion, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS fecha_creacion,
+  to_char(op.fecha_en_proceso, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_en_proceso,
+  to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_entrega_estimada,
+  to_char(op.fecha_completada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_completada,
+  to_char(op.fecha_cancelada, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS fecha_cancelada,
+  op.venta_numero, op.cliente, op.historial, op.insumos_requeridos,
+  op.descripcion_preparacion, op.tiempo_preparacion_min, op.insumos_descontados,
+  op.productos_descontados, op.stock_aplicado`;
+
 function mapearOrden(row, lineas) {
   const {
     venta_numero_resuelto: ventaNumeroResuelto,
     cliente_resuelto: clienteResuelto,
-    fecha_entrega_estimada_local: fechaEntregaEstimadaLocal,
     preparacion_vencida: _preparacionVencida,
     venta_local: _ventaLocalAnterior,
     ...orden
@@ -153,8 +163,10 @@ function mapearOrden(row, lineas) {
     'id_orden_produccion', 'id_venta', 'tiempo_preparacion_min',
   ];
   for (const campo of numericos) orden[campo] = numeroONull(orden[campo]);
+  if (orden.tipo === TIPO_PEDIDO && !minutosValidosPedido(orden.tiempo_preparacion_min)) {
+    orden.tiempo_preparacion_min = MINUTOS_CALENTAMIENTO_PEDIDO;
+  }
   orden.fecha_solicitada = fechaSql(orden.fecha_solicitada);
-  orden.fecha_entrega_estimada = fechaEntregaEstimadaLocal ?? null;
   orden.venta_numero = ventaNumeroResuelto ?? orden.venta_numero ?? null;
   orden.cliente = clienteResuelto ?? orden.cliente ?? null;
   orden.es_venta_local = esOrdenVentaLocal(row);
@@ -166,12 +178,13 @@ function mapearOrden(row, lineas) {
 
 async function obtenerOrdenEnConexion(client, idOrden, { bloquear = false } = {}) {
   const { rows } = await client.query(
-    `SELECT op.*,
-            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+    `SELECT ${COLUMNAS_ORDEN}, op.venta_local, op.notas_faltantes,
+            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+            CASE WHEN op.tipo = 'Pedido' THEN ${finPedidoSql('op')} > op.fecha_solicitada + op.hora_solicitada END AS listo_despues_recogida,
+            CASE WHEN op.tipo = 'Pedido' AND op.estado = 'En proceso' THEN ${cierreManualPedidoSql('op')} END AS cierre_manual_por_tiempo,
             CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
             (op.tiempo_preparacion_min > 0 AND op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute' <= now() AT TIME ZONE 'America/Bogota') AS preparacion_vencida,
             COALESCE(v.venta_local, FALSE) AS es_venta_local,
-            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op
@@ -560,17 +573,12 @@ export async function listarOrdenesProduccion(filtros) {
     condiciones.push(`op.tipo = $${valores.length}::text`);
   }
   const { rows } = await query(
-    `SELECT op.id_orden_produccion, op.tipo, op.id_venta, op.fecha_solicitada,
-            op.fecha_entrega_estimada, op.hora_solicitada, op.estado, op.observacion,
-            op.venta_numero, op.cliente, op.fecha_creacion, op.fecha_en_proceso,
-            op.fecha_completada, op.fecha_cancelada, op.descripcion_preparacion,
-            op.tiempo_preparacion_min, op.insumos_descontados,
-            op.productos_descontados, op.stock_aplicado, op.historial,
-            op.insumos_requeridos,
-            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + interval '${MINUTOS_CALENTAMIENTO_PEDIDO} minutes') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+    `SELECT ${COLUMNAS_ORDEN},
+            CASE WHEN op.tipo = 'Pedido' THEN EXTRACT(EPOCH FROM (${finPedidoSql('op')} AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_calentamiento_ms,
+            CASE WHEN op.tipo = 'Pedido' THEN ${finPedidoSql('op')} > op.fecha_solicitada + op.hora_solicitada END AS listo_despues_recogida,
+            CASE WHEN op.tipo = 'Pedido' AND op.estado = 'En proceso' THEN ${cierreManualPedidoSql('op')} END AS cierre_manual_por_tiempo,
             CASE WHEN op.tipo = 'Preparacion' AND op.estado = 'En proceso' AND op.tiempo_preparacion_min > 0 THEN EXTRACT(EPOCH FROM ((op.fecha_en_proceso + op.tiempo_preparacion_min * interval '1 minute') AT TIME ZONE 'America/Bogota')) * 1000 END AS fin_preparacion_ms,
             COALESCE(v.venta_local, FALSE) AS es_venta_local,
-            to_char(op.fecha_entrega_estimada, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_entrega_estimada_local,
             COALESCE(NULLIF(op.venta_numero, ''), v.id_venta::text) AS venta_numero_resuelto,
             COALESCE(NULLIF(op.cliente, ''), u.nombre) AS cliente_resuelto
        FROM tb_orden_produccion op
@@ -623,19 +631,53 @@ export async function crearOrdenProduccion(datos) {
   return crearPreparacion(datos);
 }
 
-export async function actualizarOrdenProduccion(idOrden, datos) {
+export async function actualizarOrdenProduccion(idOrden, datos, { esAdministrador = false } = {}) {
   try {
     return await transaction(async (client) => {
+      const minutos = datos.tiempo_preparacion_min;
+      if (minutos !== undefined) {
+        if (!esAdministrador) throw new AppError('Solo el Administrador puede cambiar el tiempo de preparación de un pedido.', 403);
+        await bloquearVentaDePedido(client, idOrden);
+      }
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
-      if (row.estado !== ESTADO_PENDIENTE) throw new AppError('Solo se pueden editar órdenes Pendientes.', 409);
+      const soloTiempoEnProceso = row.tipo === TIPO_PEDIDO && row.estado === ESTADO_EN_PROCESO
+        && minutos !== undefined && Object.keys(datos).length === 1;
+      if (row.estado !== ESTADO_PENDIENTE && !soloTiempoEnProceso) {
+        throw new AppError('Solo se pueden editar órdenes Pendientes o cambiar el tiempo de un pedido En proceso.', 409);
+      }
       if (row.tipo === TIPO_PEDIDO) {
-        if (datos.lineas !== undefined) throw new AppError('No se pueden cambiar las líneas de un pedido.', 400);
-        const camposNoPermitidos = Object.keys(datos).filter((campo) => campo !== 'observacion');
-        if (camposNoPermitidos.length) throw new AppError('Un pedido Pendiente solo permite editar observacion.', 400);
-        const observacion = datos.observacion !== undefined ? datos.observacion : row.observacion;
-        await client.query('UPDATE tb_orden_produccion SET observacion = $2 WHERE id_orden_produccion = $1', [idOrden, observacion]);
+        if (Object.keys(datos).some((campo) => !['observacion', 'tiempo_preparacion_min'].includes(campo))) {
+          throw new AppError('Solo se pueden editar la observación y el tiempo de preparación del pedido.', 400);
+        }
+        if (minutos !== undefined && minutos !== row.tiempo_preparacion_min) {
+          const observacion = datos.observacion !== undefined ? datos.observacion : row.observacion;
+          await client.query(
+            `UPDATE tb_orden_produccion
+                SET tiempo_preparacion_min = $2::int,
+                    fecha_entrega_estimada = CASE
+                      WHEN fecha_entrega_estimada = ${finPedidoSql('tb_orden_produccion')}
+                      THEN fecha_en_proceso + $2::int * interval '1 minute'
+                      ELSE fecha_entrega_estimada END,
+                    observacion = $3,
+                    historial = COALESCE(historial::jsonb, '[]'::jsonb) || jsonb_build_array(
+                      jsonb_build_object(
+                        'de', estado, 'a', estado,
+                        'fechaHora', to_char(clock_timestamp() AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD"T"HH24:MI:SS'),
+                        'detalle', concat('Tiempo de preparación actualizado a ', $2::int, ' min.'),
+                        'cierre_manual_por_tiempo', COALESCE(
+                          estado = 'En proceso' AND fecha_en_proceso + $2::int * interval '1 minute'
+                            <= clock_timestamp() AT TIME ZONE 'America/Bogota', FALSE)
+                      )
+                    )
+              WHERE id_orden_produccion = $1`,
+            [idOrden, minutos, observacion],
+          );
+        } else if (datos.observacion !== undefined) {
+          await client.query('UPDATE tb_orden_produccion SET observacion = $2 WHERE id_orden_produccion = $1', [idOrden, datos.observacion]);
+        }
         return (await obtenerOrdenEnConexion(client, idOrden)).orden;
       }
+      if (minutos !== undefined) throw new AppError('El tiempo editable solo aplica a pedidos.', 400);
       if (row.tipo !== TIPO_PREPARACION) throw new AppError('Tipo de orden no soportado.', 409);
 
       const fechaSolicitada = datos.fecha_solicitada ?? fechaSql(row.fecha_solicitada);
@@ -818,10 +860,23 @@ export async function obtenerCalculoVerificacionProduccion(idOrden) {
   }
 }
 
+// Serializa los cambios de las órdenes de un pedido con el avance automático.
+async function bloquearVentaDePedido(client, idOrden) {
+  const { rows } = await client.query(
+    `SELECT v.estado
+       FROM tb_orden_produccion op JOIN tb_venta v ON v.id_venta = op.id_venta
+      WHERE op.id_orden_produccion = $1::int AND op.tipo = 'Pedido'
+      FOR NO KEY UPDATE OF v`,
+    [idOrden],
+  );
+  return rows[0];
+}
+
 export async function iniciarOrdenProduccion(idOrden, datos) {
   try {
     const resultado = await transaction(async (client) => {
-      const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
+      const venta = await bloquearVentaDePedido(client, idOrden);
+      const { row, orden, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
       validarTransicion(row.estado, ESTADO_EN_PROCESO);
       const esPedido = row.tipo === TIPO_PEDIDO;
       const esVentaLocal = esOrdenVentaLocal(row);
@@ -836,7 +891,7 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
                      THEN $1::date + $2::time
                      ELSE (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota') + $3::int * interval '1 minute'
                 END, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_limite`,
-            [row.fecha_solicitada, row.hora_solicitada, MINUTOS_CALENTAMIENTO_PEDIDO],
+            [row.fecha_solicitada, row.hora_solicitada, orden.tiempo_preparacion_min],
           );
           datos = { ...datos, fecha_entrega_estimada: rows[0]?.fecha_limite };
         }
@@ -956,12 +1011,26 @@ export async function iniciarOrdenProduccion(idOrden, datos) {
           Boolean(datos.fecha_limite_automatica),
         ]
       );
+      let idVentaEnPreparacion = null;
+      if (esPedido && venta?.estado === 'Por entregar') {
+        const { rows } = await client.query(
+          `SELECT NOT EXISTS (
+             SELECT 1 FROM tb_orden_produccion
+              WHERE id_venta = $1 AND tipo = 'Pedido' AND estado = 'En proceso'
+                AND id_orden_produccion <> $2::int
+           ) AS primera`,
+          [row.id_venta, idOrden],
+        );
+        if (rows[0].primera) idVentaEnPreparacion = row.id_venta;
+      }
       return {
         orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
-        idVenta: esPedido ? row.id_venta : null,
+        idVentaEnPreparacion,
       };
     });
-    if (resultado.idVenta != null) void notificarEstadoPedido(resultado.idVenta);
+    if (resultado.idVentaEnPreparacion != null) {
+      void notificarEstadoPedido(resultado.idVentaEnPreparacion, 'En proceso');
+    }
     return resultado.orden;
   } catch (error) {
     throw mapearError(error);
@@ -1083,12 +1152,28 @@ export async function completarPedidoEnConexion(client, idOrden, ordenCargada = 
       WHERE id_orden_produccion = $1`,
     [idOrden, ESTADO_COMPLETADA, JSON.stringify(historial)],
   );
-  return { orden: (await obtenerOrdenEnConexion(client, idOrden)).orden, idVenta: row.id_venta };
+  let pedidoListoId = null;
+  if (row.id_venta != null) {
+    const { rows } = await client.query(
+      `SELECT NOT EXISTS (
+         SELECT 1 FROM tb_orden_produccion
+          WHERE id_venta = $1 AND tipo = 'Pedido' AND estado IS DISTINCT FROM 'Completada'
+       ) AS todas_completadas`,
+      [row.id_venta],
+    );
+    if (rows[0].todas_completadas) pedidoListoId = row.id_venta;
+  }
+  return {
+    orden: (await obtenerOrdenEnConexion(client, idOrden)).orden,
+    idVenta: row.id_venta,
+    pedidoListoId,
+  };
 }
 
 async function completarPreparacion(idOrden, datos, automatico) {
   try {
     const resultado = await transaction(async (client) => {
+      if (!automatico) await bloquearVentaDePedido(client, idOrden);
       const { row, lineas } = await obtenerOrdenEnConexion(client, idOrden, { bloquear: true });
 
       if (automatico && (row.tipo !== TIPO_PREPARACION || row.estado !== ESTADO_EN_PROCESO || !row.preparacion_vencida)) return null;
@@ -1273,7 +1358,7 @@ async function completarPreparacion(idOrden, datos, automatico) {
       };
     });
     if (resultado?.idVenta != null) {
-      await avanzarAutomaticamente({ notificarVentaId: resultado.idVenta });
+      await avanzarAutomaticamente({ pedidoListoId: resultado.pedidoListoId });
       const { rows } = await query('SELECT estado FROM tb_venta WHERE id_venta = $1::int', [resultado.idVenta]);
       if (!rows[0]) throw new AppError('Venta no encontrada.', 404);
       resultado.orden.estado_venta = rows[0].estado;

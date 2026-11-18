@@ -16,13 +16,13 @@ import { MOTIVO_MERMA } from '../validators/productosNoConformes.validator.js';
 // No mueven stock aquí y no se pueden eliminar.
 
 const COLUMNAS = `
-  pnc.id_producto_no_conforme, pnc.fecha_registro::text AS fecha_registro, pnc.tipo_no_conformidad,
+  pnc.id_producto_no_conforme, to_char(pnc.fecha_registro, 'YYYY-MM-DD') AS fecha_registro, pnc.tipo_no_conformidad,
   pnc.id_producto, pnc.id_insumo, pnc.id_orden_produccion, pnc.id_venta, pnc.tamano,
   pnc.cantidad_afectada, pnc.unidad_medida, pnc.motivo, pnc.descripcion_detallada,
   pnc.tipo_solucion, pnc.solucion_aplicada, pnc.foto_evidencia, pnc.estado, pnc.nombre,
   pnc.categoria, pnc.causa, pnc.area_proceso, pnc.proveedor, pnc.lote, pnc.responsable,
-  pnc.accion_tomada, pnc.accion_correctiva, pnc.fecha_limite::text AS fecha_limite,
-  pnc.responsable_accion, pnc.fecha_cierre::text AS fecha_cierre, pnc.venta_ref, pnc.orden_ref`;
+  pnc.accion_tomada, pnc.accion_correctiva, to_char(pnc.fecha_limite, 'YYYY-MM-DD') AS fecha_limite,
+  pnc.responsable_accion, to_char(pnc.fecha_cierre, 'YYYY-MM-DD') AS fecha_cierre, pnc.venta_ref, pnc.orden_ref`;
 
 function mapearError(error) {
   if (error instanceof AppError) return error;

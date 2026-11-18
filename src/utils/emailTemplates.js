@@ -1,3 +1,4 @@
+import { direccionRecogida } from '../config/ventas.js';
 import { formatearFechaHora, formatearHora } from './hora.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,8 +153,7 @@ function formatearFechaBogota(fecha) {
 /** Datos del local, configurables por entorno y con los valores de la Landing. */
 function datosDelLocal() {
   return {
-    direccion:
-      process.env.LOCAL_DIRECCION || 'Cra. 45 #104-30, Laureles, Medellín, Antioquia',
+    direccion: direccionRecogida(),
     horario:
       process.env.LOCAL_HORARIO || 'Jueves a domingo, 4:00 p. m. a 10:00 p. m.',
     telefono: process.env.LOCAL_TELEFONO || '604 234 5678',
@@ -278,7 +278,14 @@ export function buildEstadoPedidoEmail({
       }).format(Number(montoReembolso) || 0);
   const numeroSeguro = escaparHtml(idTexto);
   const local = datosDelLocal();
-  const urlPedidos = escaparHtml(urlDelFrontend().split(',')[0].trim().replace(/\/+$/, ''));
+  const urlPedidos = urlDelFrontend().split(',')[0].trim().replace(/\/+$/, '');
+  const esRecogida = estado === 'Listo para recoger';
+  const esAgradecimiento = estado === 'Completado';
+  const etiquetaEstado = estado === 'En proceso' ? 'En preparación' : estado;
+  const urlAccion = esAgradecimiento ? new URL(urlPedidos) : null;
+  if (urlAccion) urlAccion.searchParams.set('factura', idTexto);
+  const enlace = urlAccion?.href ?? urlPedidos;
+  const etiquetaAccion = esAgradecimiento ? 'Ver mi factura' : 'Ver mis pedidos';
   const mensajes = {
     Pendiente: {
       subject: `Recibimos tu pedido #${idTexto}`,
@@ -289,8 +296,8 @@ export function buildEstadoPedidoEmail({
       mensaje: 'Tu pago fue aceptado y tu pedido entra a cocina.',
     },
     'En proceso': {
-      subject: `Tu pedido #${idTexto} se está preparando`,
-      mensaje: 'Nuestro equipo de cocina está preparando tu pedido.',
+      subject: 'Tu pedido ya está en preparación',
+      mensaje: 'Tu pedido ya está en preparación.',
     },
     'Por entregar': {
       subject: `¡Tu pedido #${idTexto} está listo para recoger!`,
@@ -298,8 +305,12 @@ export function buildEstadoPedidoEmail({
         ? `Tu pedido está listo para recoger. Te esperamos a las ${horaRecogida}.`
         : 'Tu pedido está listo para recoger.',
     },
+    'Listo para recoger': {
+      subject: 'Tu pedido está listo para recoger',
+      mensaje: `Tu pedido #${idTexto} está listo para recoger en Pizzería La Sirena.`,
+    },
     Completado: {
-      subject: `Gracias por tu compra – Pedido #${idTexto}`,
+      subject: '¡Muchas gracias por tu compra!',
       mensaje: 'Tu pedido fue entregado. ¡Gracias por elegir Pizzería La Sirena!',
     },
     Rechazado: {
@@ -339,7 +350,7 @@ export function buildEstadoPedidoEmail({
           </td>
         </tr>`).join('')
     : '<tr><td style="padding:10px 14px;font-size:14px;color:#777777;">No hay productos registrados para este pedido.</td></tr>';
-  const indiceActual = PASOS_PEDIDO.indexOf(estado);
+  const indiceActual = PASOS_PEDIDO.indexOf(esRecogida ? 'Por entregar' : estado);
   const progreso = `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 0;">
       <tr>
@@ -351,7 +362,7 @@ export function buildEstadoPedidoEmail({
           return `
             <td align="center" valign="top" width="20%" style="padding:0 2px;">
               <div style="width:24px;height:24px;line-height:24px;margin:0 auto 6px;border-radius:50%;background-color:${color};color:#ffffff;font-size:13px;font-weight:bold;">${actual || completado ? '✓' : indice + 1}</div>
-              <div style="font-size:10px;line-height:1.3;color:${textoColor};${actual ? 'font-weight:bold;' : ''}">${escaparHtml(paso)}</div>
+              <div style="font-size:10px;line-height:1.3;color:${textoColor};${actual ? 'font-weight:bold;' : ''}">${escaparHtml(paso === 'En proceso' ? 'En preparación' : paso)}</div>
             </td>`;
         }).join('')}
       </tr>
@@ -379,7 +390,7 @@ export function buildEstadoPedidoEmail({
       <tr><td style="padding:20px 28px 8px;">
         <p style="margin:0 0 8px;font-size:15px;font-weight:bold;color:#222222;">Seguimiento de tu pedido</p>
         ${progreso}
-        <p style="margin:10px 0 0;text-align:center;font-size:13px;color:#555555;">Estado actual: <strong>${escaparHtml(estado)}</strong></p>
+        <p style="margin:10px 0 0;text-align:center;font-size:13px;color:#555555;">Estado actual: <strong>${escaparHtml(etiquetaEstado)}</strong></p>
       </td></tr>
       <tr><td style="padding:16px 28px 24px;">
         <p style="margin:0 0 8px;font-size:15px;font-weight:bold;color:#222222;">Resumen del pedido #${numeroSeguro}</p>
@@ -387,10 +398,11 @@ export function buildEstadoPedidoEmail({
           ${filasProductos}
           <tr><td style="padding:12px 14px;font-size:14px;color:#222222;border-top:2px solid #eeeeee;"><strong>Total</strong></td><td align="right" style="padding:12px 14px;font-size:14px;color:#222222;border-top:2px solid #eeeeee;"><strong>${escaparHtml(totalTexto)}</strong></td></tr>
         </table>
-        ${estado === 'Por entregar' && horaRecogida
+        ${(esRecogida || estado === 'Por entregar') && horaRecogida
           ? `<p style="margin:12px 0 0;font-size:14px;color:#555555;">Hora de recogida: <strong>${escaparHtml(horaRecogida)}</strong></p>`
           : ''}
-        <p style="margin:16px 0 0;text-align:center;"><a href="${urlPedidos}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:14px;font-weight:bold;text-decoration:none !important;padding:12px 24px;border-radius:9px;">Ver mis pedidos</a></p>
+        ${esRecogida ? `<p style="margin:12px 0 0;font-size:14px;color:#555555;">Dirección de recogida: <strong>${escaparHtml(local.direccion)}</strong></p>` : ''}
+        <p style="margin:16px 0 0;text-align:center;"><a href="${escaparHtml(enlace)}" style="display:inline-block;background-color:#2E9E3E;color:#ffffff !important;font-size:14px;font-weight:bold;text-decoration:none !important;padding:12px 24px;border-radius:9px;">${etiquetaAccion}</a></p>
       </td></tr>
       ${pieCompartido()}
     </table>
@@ -400,16 +412,17 @@ export function buildEstadoPedidoEmail({
     `Hola ${nombreCompleto},`,
     '',
     contenidoEstado.mensaje,
-    `Estado actual: ${estado}`,
+    `Estado actual: ${etiquetaEstado}`,
     '',
     `Resumen del pedido #${idTexto}:`,
     resumenTexto,
     `Total: ${totalTexto}`,
-    ...(estado === 'Por entregar' && horaRecogida ? [`Hora de recogida: ${horaRecogida}`] : []),
+    ...((esRecogida || estado === 'Por entregar') && horaRecogida ? [`Hora de recogida: ${horaRecogida}`] : []),
+    ...(esRecogida ? [`Dirección de recogida: ${local.direccion}`] : []),
     ...(motivoTexto ? [`Motivo: ${motivoTexto}`] : []),
     ...(estado === 'Anulado' && reembolsoTexto ? [`Valor a devolver: ${reembolsoTexto}`] : []),
     '',
-    `Consulta tus pedidos: ${urlPedidos}`,
+    `${etiquetaAccion}: ${enlace}`,
     '',
     'Gracias por elegir Pizzería La Sirena.',
     '',
