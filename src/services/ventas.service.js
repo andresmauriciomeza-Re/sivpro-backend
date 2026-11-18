@@ -419,9 +419,9 @@ export async function confirmarPagoVenta(idVenta, idPago, montoConfirmado) {
       if (pago.estado === 'Rechazado') throw new AppError('El pago está rechazado.', 409);
       if (pago.monto_confirmado !== null) throw new AppError('Este pago ya está confirmado.', 409);
       await client.query(
-        `UPDATE tb_pagos SET monto_confirmado = $3, depositado = $3, estado = 'Verificado'
+        `UPDATE tb_pagos SET monto_confirmado = $3, depositado = $4, estado = 'Verificado'
           WHERE id_venta = $1 AND id_pago = $2`,
-        [idVenta, idPago, montoConfirmado]
+        [idVenta, idPago, montoConfirmado, montoConfirmado]
       );
       const resumen = await consultarResumenPagos(client.query.bind(client), idVenta);
       await client.query(
