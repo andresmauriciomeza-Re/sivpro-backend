@@ -182,9 +182,9 @@ export async function crearProductoNoConforme(datos) {
             cantidad_afectada, unidad_medida, motivo, descripcion_detallada, tipo_solucion,
             solucion_aplicada, foto_evidencia, estado, nombre, categoria, causa, area_proceso,
             proveedor, lote, responsable, accion_tomada, accion_correctiva, fecha_limite,
-            responsable_accion, venta_ref, orden_ref, tamano)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Pendiente', $14, $15,
-                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+            responsable_accion, venta_ref, orden_ref, tamano, fecha_cierre)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Completado', $14, $15,
+                 $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
          RETURNING id_producto_no_conforme`,
         [
           datos.fecha_registro, datos.tipo_no_conformidad, datos.id_producto, datos.id_insumo,
@@ -196,7 +196,7 @@ export async function crearProductoNoConforme(datos) {
           datos.fecha_limite, datos.responsable_accion,
           datos.id_venta == null ? null : String(datos.id_venta),
           datos.id_orden_produccion == null ? null : String(datos.id_orden_produccion),
-          catalogo.tamano,
+          catalogo.tamano, fechaHoraBogota().fecha,
         ]
       );
       return mapearRegistro(await obtenerEnConexion(client, rows[0].id_producto_no_conforme));

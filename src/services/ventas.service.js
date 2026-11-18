@@ -762,9 +762,9 @@ export async function resolverDevolucion(idDevolucion, datos) {
             `INSERT INTO tb_productos_no_conformes
                (fecha_registro, tipo_no_conformidad, id_producto, id_venta, cantidad_afectada,
                 unidad_medida, motivo, descripcion_detallada, estado, nombre, categoria,
-                area_proceso, venta_ref)
-             VALUES ($1, 'Venta', $2, $3, $4, $5, 'Pérdida en venta', $6, 'Pendiente', $7, $8,
-                     'Ventas', $9)`,
+                area_proceso, venta_ref, fecha_cierre)
+             VALUES ($1, 'Venta', $2, $3, $4, $5, 'Pérdida en venta', $6, 'Completado', $7, $8,
+                     'Ventas', $9, $1)`,
             [
               fechaHoraBogota().fecha,
               fila.id_producto,
