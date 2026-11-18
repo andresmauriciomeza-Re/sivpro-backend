@@ -1230,9 +1230,9 @@ async function completarPreparacion(idOrden, datos, automatico) {
               `INSERT INTO tb_productos_no_conformes
                  (fecha_registro, tipo_no_conformidad, id_producto, id_insumo, id_orden_produccion, tamano,
                   id_venta, cantidad_afectada, unidad_medida, motivo, descripcion_detallada,
-                  estado, nombre, categoria, area_proceso, orden_ref)
+                  estado, nombre, categoria, area_proceso, orden_ref, fecha_cierre)
                VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8,
-                       'Pérdida en cocina', $9, 'Pendiente', $10, $11, 'Producción', $12)`,
+                       'Pérdida en cocina', $9, 'Completado', $10, $11, 'Producción', $12, $1)`,
               [
                 fechaHoraBogota().fecha,
                 esProducto ? 'Producto' : 'Producto insumo',

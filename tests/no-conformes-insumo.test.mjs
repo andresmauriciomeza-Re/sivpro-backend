@@ -19,6 +19,9 @@ test('no conforme de un insumo con cantidad 0.5 descuenta exactamente 0.5', asyn
         return { rows: [], rowCount: 1 };
       }
       if (consulta.startsWith('insert into tb_productos_no_conformes')) {
+        assert.match(consulta, /fecha_cierre/);
+        assert.match(consulta, /'completado'/);
+        assert.match(params[27], /^\d{4}-\d{2}-\d{2}$/);
         return { rows: [{ id_producto_no_conforme: 9 }] };
       }
       if (consulta.includes('from tb_productos_no_conformes pnc')) {

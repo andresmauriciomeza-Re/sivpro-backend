@@ -1,12 +1,15 @@
 import cloudinary from '../config/cloudinary.js';
 import AppError from '../errors/AppError.js';
+import { randomUUID } from 'node:crypto';
 
-export function subirImagen(buffer, carpeta = 'sivpro/productos') {
+export function subirImagen(buffer, carpeta = 'sivpro/productos', mimetype) {
+  const esPdf = mimetype === 'application/pdf';
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: carpeta,
-        resource_type: 'image',
+        resource_type: esPdf ? 'raw' : 'image',
+        ...(esPdf ? { public_id: `${randomUUID()}.pdf` } : {}),
       },
       (error, result) => {
         if (error) {
@@ -16,7 +19,7 @@ export function subirImagen(buffer, carpeta = 'sivpro/productos') {
             name: error.name,
           });
           return reject(
-            new AppError('No se pudo subir la imagen a Cloudinary.', 502)
+            new AppError('No se pudo subir el archivo a Cloudinary.', 502)
           );
         }
         resolve({
