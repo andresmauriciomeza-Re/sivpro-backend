@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import AppError from '../errors/AppError.js';
 import { query, transaction } from '../config/db.js';
 import { contratoAbiertoSql, contratoVigenteSql } from '../utils/contratacion.js';
+import { fechaHoraBogota } from '../utils/produccion.js';
 import { enviarAvisoIngresoEquipo, enviarInvitacionEmpleado } from './mail.service.js';
 
 // Alta de empleado con invitación por correo. El formulario NO pide contraseña:
@@ -442,78 +443,138 @@ async function reemplazarRoles(client, idContrato, idsRoles) {
   }
 }
 
+/** Cargos extra (sin Empleado, Cliente ni Administrador) de una contratación. */
+async function contarCargosDelContrato(client, idContrato) {
+  const { rows } = await client.query(
+    `SELECT COUNT(*)::int AS total
+       FROM tb_empleado_roles er
+       JOIN tb_roles r ON r.id_rol = er.id_rol
+      WHERE er.id_contrato = $1
+        AND LOWER(TRIM(r.nombre)) NOT IN ('empleado', 'cliente', 'administrador')`,
+    [idContrato]
+  );
+  return rows[0].total;
+}
+
 /**
- * PUT /empleados/:id: nombre, correo y teléfono de la cuenta, y cargos y fechas
- * de la contratación ABIERTA (las cerradas son historial y no se editan). El tipo
- * y el número de documento no se editan. Si cambia el correo de una cuenta que
- * aún no se activó, la invitación se manda al correo nuevo con un token nuevo.
+ * Registra una contratación nueva DENTRO de la transacción que ya está abierta:
+ * cierra las que sigan abiertas (fecha final = inicio nuevo − 1 día) y crea la
+ * nueva con sus cargos. Es el mismo cuerpo que usaba POST /empleados/:id/
+ * contrataciones, para que la reactivación desde la edición haga lo mismo.
+ */
+async function nuevaContratacionEn(client, idEmpleado, { fechaInicio, fechaFinal, idsCargos, rolCliente, esSuper = false, abiertas = null }) {
+  const abiertasActuales = abiertas ?? (await client.query(
+    `SELECT ce.id_contrato,
+            to_char(ce.fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
+            (($1::date - 1) < ce.fecha_inicio) AS inicio_invalido
+       FROM tb_contratacion_empleado ce
+      WHERE ce.id_empleado = $2 AND ${contratoAbiertoSql('ce')}
+      FOR UPDATE`,
+    [fechaInicio, idEmpleado]
+  )).rows;
+  if (esSuper && abiertasActuales.length) {
+    throw new AppError(MENSAJE_SUPER_ADMIN_CONTRATO, 403);
+  }
+  const invalida = abiertasActuales.find((fila) => fila.inicio_invalido);
+  if (invalida) {
+    throw new AppError(
+      `La fecha de inicio debe ser posterior al inicio de la contratación vigente (${invalida.fecha_inicio}); `
+      + 'así la contratación anterior se puede cerrar el día anterior.',
+      400
+    );
+  }
+  if (abiertasActuales.length) {
+    await client.query(
+      `UPDATE tb_contratacion_empleado
+          SET fecha_final = LEAST(COALESCE(fecha_final, $1::date - 1), $1::date - 1)
+        WHERE id_contrato = ANY($2::int[])`,
+      [fechaInicio, abiertasActuales.map((fila) => fila.id_contrato)]
+    );
+  }
+
+  const { rows: filas } = await client.query(
+    `INSERT INTO tb_contratacion_empleado (id_empleado, fecha_inicio, fecha_final)
+     VALUES ($1, $2::date, NULLIF($3, '')::date)
+     RETURNING id_contrato`,
+    [idEmpleado, fechaInicio, fechaFinal || '']
+  );
+  await reemplazarRoles(client, filas[0].id_contrato, [rolCliente, ...idsCargos]);
+  return filas[0].id_contrato;
+}
+
+/**
+ * PUT /empleados/:id: SOLO cargos, estado y fecha final, y únicamente de un
+ * empleado INACTIVO (los datos de la persona se editan desde el Perfil de cada
+ * quien). Si hay contratación abierta se edita esa; si no la hay y el estado
+ * queda en Activo, se registra una nueva con inicio = hoy (hora de Bogotá),
+ * cargos elegidos y fecha final indicada, con la misma lógica de "Nueva
+ * contratación" (cierre automático de la anterior si aplica).
  */
 export async function editarEmpleado(idEmpleado, datos) {
-  const tocaContrato = datos.cargos !== undefined
-    || datos.fechaInicio !== undefined
-    || datos.fechaFinal !== undefined;
+  const tocaContrato = datos.cargos !== undefined || datos.fechaFinal !== undefined;
+  const activando = datos.estado === true;
+  const hoy = fechaHoraBogota().fecha;
 
   const { rolCliente } = await resolverRolesBase();
   const idsCargos = datos.cargos !== undefined ? await resolverCargos(datos.cargos) : null;
 
-  let invitacion = null;
-  try {
-    await transaction(async (client) => {
-      const empleado = await bloquearEmpleado(client, idEmpleado);
-      const documento = String(empleado.id_usuario);
+  await transaction(async (client) => {
+    const empleado = await bloquearEmpleado(client, idEmpleado);
+    const documento = String(empleado.id_usuario);
+    const esSuper = esSuperAdminId(documento);
 
-      const { rows: duenos } = await client.query(
-        'SELECT id_usuario FROM tb_usuarios WHERE LOWER(correo) = LOWER($1) AND id_usuario <> $2',
-        [datos.correo, documento]
+    if (empleado.estado) {
+      throw new AppError(
+        'Solo puedes editar cargos, estado y fecha final de un empleado inactivo. Desactívalo primero.',
+        403
       );
-      if (duenos.length) throw new AppError(MENSAJE_CORREO_DE_OTRO, 409);
+    }
+    if (datos.estado === false && esSuper) {
+      throw new AppError(MENSAJE_SUPER_ADMIN_ESTADO, 403);
+    }
+
+    const { rows: abiertas } = await client.query(
+      `SELECT ce.id_contrato,
+              to_char(ce.fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
+              to_char(ce.fecha_final, 'YYYY-MM-DD') AS fecha_final
+         FROM tb_contratacion_empleado ce
+        WHERE ce.id_empleado = $1 AND ${contratoAbiertoSql('ce')}
+        ORDER BY ce.fecha_inicio DESC, ce.id_contrato DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [idEmpleado]
+    );
+    const contrato = abiertas[0] ?? null;
+
+    if (esSuper && (tocaContrato || (activando && !contrato))) {
+      throw new AppError(MENSAJE_SUPER_ADMIN_CONTRATO, 403);
+    }
+    // Sin contratación abierta, los cargos y la fecha final solo se pueden
+    // guardar creando una contratación nueva, que es lo que pasa al activar.
+    if (!contrato && tocaContrato && !activando) {
+      throw new AppError(
+        'Este empleado no tiene una contratación abierta. Actívalo para registrar una nueva contratación con esos cargos.',
+        400
+      );
+    }
+
+    if (contrato) {
+      const fechaInicio = contrato.fecha_inicio;
+      const fechaFinal = datos.fechaFinal === undefined ? (contrato.fecha_final ?? '') : datos.fechaFinal;
+      if (fechaFinal && fechaFinal < fechaInicio) {
+        throw new AppError('La fecha final no puede ser anterior a la fecha de inicio.', 400);
+      }
+      if (activando) {
+        if (fechaFinal && fechaFinal < hoy) {
+          throw new AppError('La fecha final no puede ser anterior a hoy.', 400);
+        }
+        const cargosActuales = idsCargos ?? await contarCargosDelContrato(client, contrato.id_contrato);
+        if (!cargosActuales.length) {
+          throw new AppError('Debe tener al menos un cargo para activar al empleado.', 400);
+        }
+      }
 
       if (tocaContrato) {
-        const { rows: abiertas } = await client.query(
-          `SELECT ce.id_contrato,
-                  to_char(ce.fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
-                  to_char(ce.fecha_final, 'YYYY-MM-DD') AS fecha_final
-             FROM tb_contratacion_empleado ce
-            WHERE ce.id_empleado = $1 AND ${contratoAbiertoSql('ce')}
-            ORDER BY ce.fecha_inicio DESC, ce.id_contrato DESC
-            LIMIT 1
-            FOR UPDATE`,
-          [idEmpleado]
-        );
-        const contrato = abiertas[0];
-        if (!contrato) {
-          throw new AppError(
-            'Este empleado no tiene una contratación abierta para editar. Crea una nueva contratación.',
-            400
-          );
-        }
-
-        const fechaInicio = datos.fechaInicio ?? contrato.fecha_inicio;
-        const fechaFinal = datos.fechaFinal === undefined ? (contrato.fecha_final ?? '') : datos.fechaFinal;
-        if (fechaFinal && fechaFinal < fechaInicio) {
-          throw new AppError('La fecha final no puede ser anterior a la fecha de inicio.', 400);
-        }
-        if (esSuperAdminId(documento) && fechaFinal) {
-          throw new AppError(MENSAJE_SUPER_ADMIN_CONTRATO, 403);
-        }
-
-        // Si cambia el inicio, no puede solaparse con la contratación anterior.
-        if (fechaInicio !== contrato.fecha_inicio) {
-          const { rows: previas } = await client.query(
-            `SELECT to_char(MAX(fecha_final), 'YYYY-MM-DD') AS ultima
-               FROM tb_contratacion_empleado
-              WHERE id_empleado = $1 AND id_contrato <> $2 AND fecha_final IS NOT NULL`,
-            [idEmpleado, contrato.id_contrato]
-          );
-          const ultima = previas[0]?.ultima;
-          if (ultima && fechaInicio <= ultima) {
-            throw new AppError(
-              `La fecha de inicio debe ser posterior a la fecha final de la contratación anterior (${ultima}).`,
-              400
-            );
-          }
-        }
-
         await client.query(
           `UPDATE tb_contratacion_empleado
               SET fecha_inicio = $1::date, fecha_final = NULLIF($2, '')::date
@@ -524,45 +585,32 @@ export async function editarEmpleado(idEmpleado, datos) {
           await reemplazarRoles(client, contrato.id_contrato, [rolCliente, ...idsCargos]);
         }
       }
-
-      const nombre = normalizarNombre(datos.nombre);
-      const correoCambio = normalizar(datos.correo) !== normalizar(empleado.correo);
-      if (correoCambio && empleado.pendiente) {
-        const { token, hash } = generarTokenActivacion();
-        await client.query(
-          `UPDATE tb_usuarios
-              SET nombre = $1, correo = $2, telefono = $3, token_activacion = $4,
-                  token_activacion_expira = NOW() + ($5::int * INTERVAL '1 hour')
-            WHERE id_usuario = $6`,
-          [nombre, datos.correo, datos.telefono || null, hash, HORAS_VIGENCIA_TOKEN, documento]
-        );
-        invitacion = { token, nombre, documento, tipoDocumento: empleado.tipo_documento };
-      } else {
-        await client.query(
-          'UPDATE tb_usuarios SET nombre = $1, correo = $2, telefono = $3 WHERE id_usuario = $4',
-          [nombre, datos.correo, datos.telefono || null, documento]
-        );
+    } else if (activando) {
+      // Empleado inactivo sin contratación abierta: se reactiva creando una
+      // contratación nueva con inicio = hoy (hora de Bogotá).
+      const fechaFinal = datos.fechaFinal ?? '';
+      if (fechaFinal && fechaFinal < hoy) {
+        throw new AppError('La fecha final no puede ser anterior a hoy.', 400);
       }
-    });
-  } catch (error) {
-    if (error?.code === '23505') throw new AppError(MENSAJE_CORREO_DE_OTRO, 409);
-    throw error;
-  }
+      const cargosNuevos = idsCargos ?? [];
+      if (!cargosNuevos.length) {
+        throw new AppError('Debe tener al menos un cargo para activar al empleado.', 400);
+      }
+      await nuevaContratacionEn(client, idEmpleado, {
+        fechaInicio: hoy,
+        fechaFinal,
+        idsCargos: cargosNuevos,
+        rolCliente,
+        esSuper,
+      });
+    }
 
-  if (!invitacion) return { mensaje: 'Empleado actualizado.', correoEnviado: null };
-
-  const { roles, fechaInicio } = await datosDeContratacion(invitacion.documento);
-  const correoEnviado = await enviarInvitacionEmpleado({
-    nombre: invitacion.nombre,
-    correo: datos.correo,
-    tipoDocumento: invitacion.tipoDocumento,
-    numeroDocumento: invitacion.documento,
-    roles,
-    fechaInicio,
-    token: invitacion.token,
-    vencimiento: vencimientoDeToken(),
+    if (datos.estado !== undefined) {
+      await client.query('UPDATE tb_empleado SET estado = $1 WHERE id_empleado = $2', [datos.estado, idEmpleado]);
+    }
   });
-  return { mensaje: 'Empleado actualizado. Se envió la invitación al correo nuevo.', correoEnviado };
+
+  return { mensaje: 'Empleado actualizado.', correoEnviado: null };
 }
 
 /** PATCH /empleados/:id/estado: activa o desactiva la ficha. No toca la cuenta
@@ -608,30 +656,15 @@ export async function crearContratacion(idEmpleado, datos) {
     if (abiertas.length && esSuper) {
       throw new AppError(MENSAJE_SUPER_ADMIN_CONTRATO, 403);
     }
-    const invalida = abiertas.find((fila) => fila.inicio_invalido);
-    if (invalida) {
-      throw new AppError(
-        `La fecha de inicio debe ser posterior al inicio de la contratación vigente (${invalida.fecha_inicio}); `
-        + 'así la contratación anterior se puede cerrar el día anterior.',
-        400
-      );
-    }
-    if (abiertas.length) {
-      await client.query(
-        `UPDATE tb_contratacion_empleado
-            SET fecha_final = LEAST(COALESCE(fecha_final, $1::date - 1), $1::date - 1)
-          WHERE id_contrato = ANY($2::int[])`,
-        [datos.fechaInicio, abiertas.map((fila) => fila.id_contrato)]
-      );
-    }
 
-    const { rows: filas } = await client.query(
-      `INSERT INTO tb_contratacion_empleado (id_empleado, fecha_inicio, fecha_final)
-       VALUES ($1, $2::date, NULLIF($3, '')::date)
-       RETURNING id_contrato`,
-      [idEmpleado, datos.fechaInicio, datos.fechaFinal || '']
-    );
-    await reemplazarRoles(client, filas[0].id_contrato, [rolCliente, ...idsCargos]);
+    await nuevaContratacionEn(client, idEmpleado, {
+      fechaInicio: datos.fechaInicio,
+      fechaFinal: datos.fechaFinal,
+      idsCargos,
+      rolCliente,
+      esSuper,
+      abiertas,
+    });
     await client.query('UPDATE tb_empleado SET estado = $1 WHERE id_empleado = $2', [datos.estado, idEmpleado]);
   });
 

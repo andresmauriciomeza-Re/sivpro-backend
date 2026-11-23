@@ -1,5 +1,5 @@
 import AppError from '../errors/AppError.js';
-import { validarDatosPersona, validarNombreCorreoTelefono } from './auth.validator.js';
+import { validarDatosPersona } from './auth.validator.js';
 
 // Alta de empleado (POST /empleados): los datos de la persona (teléfono
 // OPCIONAL, como en el formulario), el estado de la ficha, los cargos
@@ -111,24 +111,27 @@ export function validarIdEmpleado(req, res, next) {
   next();
 }
 
-/** PUT /empleados/:id. Nombre, correo y teléfono siempre; cargos y fechas solo
- *  si se envían (se aplican a la contratación abierta). */
+/** PUT /empleados/:id. Lista blanca estrecha: SOLO cargos, estado y fecha final,
+ *  y solo de un empleado INACTIVO (el servicio lo comprueba). Nombre, correo,
+ *  teléfono, tipo y número de documento y fecha de inicio se RECHAZAN (los datos
+ *  de la persona se editan desde el Perfil de cada quien). */
 export function validarEditarEmpleado(req, res, next) {
   const body = req.body;
-  exigirCuerpoConLista(body, ['nombre', 'correo', 'telefono', 'cargos', 'fechaInicio', 'fechaFinal']);
+  exigirCuerpoConLista(body, ['cargos', 'estado', 'fechaFinal']);
 
-  const contacto = validarNombreCorreoTelefono(body, { telefonoOpcional: true });
-  const datos = { ...contacto };
-
-  if (body.cargos !== undefined) datos.cargos = validarCargos(body.cargos);
-  if (body.fechaInicio !== undefined) {
-    datos.fechaInicio = validarFecha(body.fechaInicio, 'fecha de inicio', true);
+  if (body.estado !== undefined && typeof body.estado !== 'boolean') {
+    throw new AppError('El estado debe ser activo o inactivo.', 400);
   }
+
+  const datos = {};
+  if (body.estado !== undefined) datos.estado = body.estado;
+  if (body.cargos !== undefined) datos.cargos = validarCargos(body.cargos);
   if (body.fechaFinal !== undefined) {
     datos.fechaFinal = validarFecha(body.fechaFinal, 'fecha final', false);
   }
-  validarOrdenFechas(datos.fechaInicio, datos.fechaFinal);
 
+  // El orden de fechas se valida en el servicio, contra la fecha de inicio REAL
+  // de la contratación abierta (aquí no se envía).
   req.body = datos;
   next();
 }
