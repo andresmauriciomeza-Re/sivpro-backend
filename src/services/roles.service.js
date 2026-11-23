@@ -258,17 +258,11 @@ async function obtenerIdsRelaciones(client, accesos) {
 async function reemplazarRelaciones(client, idRol, accesos) {
   const relaciones = await obtenerIdsRelaciones(client, accesos);
   await client.query('DELETE FROM tb_roles_permiso WHERE id_rol = $1', [idRol]);
-  const { rows: siguiente } = await client.query(
-    'SELECT COALESCE(MAX(id_rolpermiso), 0) + 1 AS id FROM tb_roles_permiso',
-    [],
-  );
-  let idRelacion = Number(siguiente[0].id);
   for (const fila of relaciones) {
     await client.query(
-      'INSERT INTO tb_roles_permiso (id_rolpermiso, id_rol, id_permiso, id_privilegio) VALUES ($1, $2, $3, $4)',
-      [idRelacion, idRol, fila.id_permiso, fila.id_privilegio],
+      'INSERT INTO tb_roles_permiso (id_rol, id_permiso, id_privilegio) VALUES ($1, $2, $3)',
+      [idRol, fila.id_permiso, fila.id_privilegio],
     );
-    idRelacion += 1;
   }
 }
 
@@ -304,15 +298,11 @@ export async function crearRol(body) {
     await bloquearCambiosDeRoles(client);
     const datos = await datosRolDesdeBody(client, body, { crear: true });
     await validarNombreUnico(client, datos.nombre);
-    const { rows: siguiente } = await client.query(
-      'SELECT COALESCE(MAX(id_rol), 0) + 1 AS id FROM tb_roles',
-      [],
+    const { rows: [nuevo] } = await client.query(
+      'INSERT INTO tb_roles (nombre, descripcion, estado) VALUES ($1, $2, $3) RETURNING id_rol',
+      [datos.nombre, datos.descripcion, datos.activo],
     );
-    const idRol = Number(siguiente[0].id);
-    await client.query(
-      'INSERT INTO tb_roles (id_rol, nombre, descripcion, estado) VALUES ($1, $2, $3, $4)',
-      [idRol, datos.nombre, datos.descripcion, datos.activo],
-    );
+    const idRol = Number(nuevo.id_rol);
     await reemplazarRelaciones(client, idRol, datos.accesos);
     const roles = await listarRolesCon(client);
     return roles.find(rol => rol.id === String(idRol));
