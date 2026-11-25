@@ -22,6 +22,9 @@ function mapearError(error) {
   if (error instanceof AppError) return error;
   if (error?.code === '23505') return new AppError('Ya existe un registro de compra con esos datos.', 409);
   if (error?.code === '23503') return new AppError('El proveedor, la orden o alguno de los artículos no existe.', 400);
+  if (error?.code === '23514' && ['ck_compras_motivo_anulacion', 'ck_compras_anulacion'].includes(error?.constraint)) {
+    return new AppError('El motivo es obligatorio y no puede superar 500 caracteres.', 400);
+  }
   if (error?.code === '23514' || error?.code === '23502' || error?.code === '22P02') {
     return new AppError('Los datos de la compra no cumplen las reglas de la base de datos.', 400);
   }
