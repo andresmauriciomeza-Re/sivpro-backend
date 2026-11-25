@@ -19,6 +19,14 @@ export async function crearClienteControlador(req, res, next) {
 
 export async function editarClienteControlador(req, res, next) {
   try {
+    // Cada persona edita sus datos desde su Perfil (PUT /auth/perfil). Por esta
+    // vía nadie puede editar la ficha de OTRA persona.
+    if (String(req.usuario?.id) !== String(req.params.id)) {
+      throw new AppError(
+        'No puedes editar los datos de otra persona. Cada quien edita los suyos desde su perfil.',
+        403
+      );
+    }
     res.status(200).json(await editarCliente(req.params.id, req.body));
   } catch (error) { next(error); }
 }
