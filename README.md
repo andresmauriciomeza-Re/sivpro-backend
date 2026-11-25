@@ -13,8 +13,9 @@ Backend de S.I.V.PRO construido con Node.js + Express. Expone endpoints de salud
    - [Autenticación](#autenticación)
    - [Recuperación de contraseña](#recuperación-de-contraseña)
    - [Subida de archivos](#subida-de-archivos)
-6. [Estructura del proyecto](#estructura-del-proyecto)
-7. [Notas](#notas)
+6. [Migración 020](#migración-020)
+7. [Estructura del proyecto](#estructura-del-proyecto)
+8. [Notas](#notas)
 
 ## Requisitos
 
@@ -281,6 +282,23 @@ curl -X POST http://localhost:3000/api/uploads \
   -H "Authorization: Bearer <token>" \
   -F "archivo=@./foto.jpg" \
   -F "carpeta=productos"
+```
+
+## Migración 020
+
+Deja en migraciones de Postgres el baseline de compras e historial de órdenes de compra (`migrations/020_baseline_compras_y_historial.up.sql`). Es idempotente y no borra datos.
+
+- Asegura (`ADD COLUMN IF NOT EXISTS`) las columnas de anulación, IVA por línea e insumos no solicitados de `tb_compras` y `tb_detallecompra`.
+- Crea `ck_compras_motivo_anulacion` (una compra `Anulado` exige motivo) y la valida si no hay filas en conflicto.
+- Inserta el estado `Borrador` en `tb_estadooc` para las órdenes sin historial.
+- Crea `idx_detallecompra_es_no_solicitado`.
+- No toca el NIT: `tb_proveedores_nit_key` ya existe.
+
+```bash
+node scripts/diagnostico-020.mjs   # opcional: diagnóstico de solo lectura
+node migrations/run-migration.mjs migrations/020_baseline_compras_y_historial.up.sql
+# Reversa (solo quita el CHECK y el índice; no borra columnas ni filas):
+node migrations/run-migration.mjs migrations/020_baseline_compras_y_historial.down.sql
 ```
 
 ## Estructura del proyecto
