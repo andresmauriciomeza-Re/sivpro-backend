@@ -148,6 +148,29 @@ export async function actualizarProveedor(idProveedor, datos) {
 export async function cambiarEstadoProveedor(idProveedor, estado) {
   try {
     return await transaction(async (client) => {
+      // Desactivar exige no tener órdenes en curso; activar siempre se permite.
+      if (estado === false) {
+        // El bloqueo impide que se cree una orden (toma FOR SHARE) mientras se revisa.
+        const { rows: proveedor } = await client.query('SELECT id_proveedor FROM tb_proveedores WHERE id_proveedor = $1 FOR UPDATE', [idProveedor]);
+        if (!proveedor[0]) throw new AppError('Proveedor no encontrado.', 404);
+        const { rows: ordenes } = await client.query(
+          `SELECT EXISTS (
+             SELECT 1
+               FROM tb_ordencompras o
+              CROSS JOIN LATERAL (
+                SELECT estado FROM tb_estadooc
+                 WHERE id_ocompra = o.id_ocompra
+                 ORDER BY fecha_estado DESC, id_estadooc DESC
+                 LIMIT 1
+              ) actual
+              WHERE o.id_proveedor = $1 AND actual.estado IN ('Borrador', 'Enviado')
+           ) AS en_curso`,
+          [idProveedor]
+        );
+        if (ordenes[0].en_curso) {
+          throw new AppError('No se puede desactivar: el proveedor tiene órdenes de compra en curso (Borrador o Enviado). Complétalas o anúlalas primero.', 409);
+        }
+      }
       const { rowCount } = await client.query('UPDATE tb_proveedores SET estado = $2 WHERE id_proveedor = $1', [idProveedor, estado]);
       if (!rowCount) throw new AppError('Proveedor no encontrado.', 404);
       const { rows } = await client.query(`SELECT ${COLUMNAS} FROM tb_proveedores WHERE id_proveedor = $1`, [idProveedor]);
